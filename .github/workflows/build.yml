@@ -1,0 +1,253 @@
+name: PDFium WASM Build
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Prevent concurrent builds
+concurrency:
+  group: pdfium-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: Production
+    strategy:
+      matrix:
+        build_type: [dev, prod]
+    name: Build (${{ matrix.build_type }})
+    env:
+      # Build paths
+      ROOT: ${{ github.workspace }}
+      SRC: ${{ github.workspace }}/pdfium-src
+      OUT: ${{ github.workspace }}/pdfium-src/out/wasm
+      PDFIUM: ${{ github.workspace }}
+
+      # Emscripten (matching Dockerfile emsdk-base)
+      EMSDK: /opt/emsdk
+      EM_CACHE: /opt/emsdk/upstream/emscripten/cache
+      EM_TOOLCHAIN_FILE: /opt/emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake
+
+      # Build environment (matching Dockerfile line 8-14)
+      INSTALL_DIR: /opt
+      CFLAGS: -I/opt/include
+      CXXFLAGS: -I/opt/include
+      LDFLAGS: -L/opt/lib -I/opt/include
+      EM_PKG_CONFIG_PATH: /opt/lib/pkgconfig:/opt/emsdk/upstream/emscripten/system/lib/pkgconfig
+      PKG_CONFIG_PATH: /opt/lib/pkgconfig:/opt/emsdk/upstream/emscripten/system/lib/pkgconfig
+
+      # Other
+      TZ: Etc/UTC
+
+    steps:
+      # ============ Basic Setup ============
+      # Checkout compilation target workspace root
+      - name: Checkout compilation source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ secrets.SOURCE_REPOSITORY }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          submodules: 'recursive'
+
+      # ============ Cache Strategy (restore-only, save separately) ============
+      - name: Setup cache key
+        id: cache-settings
+        run: |
+          echo "key=emsdk-3.1.70-${{ runner.os }}-${{ matrix.build_type }}" >> $GITHUB_OUTPUT
+
+      - name: Restore Emscripten SDK cache
+        id: cache-emsdk
+        uses: actions/cache/restore@v4
+        with:
+          path: /opt/emsdk
+          key: ${{ steps.cache-settings.outputs.key }}
+
+      - name: Restore CIPD bootstrap cache
+        id: cache-cipd
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            /opt/pdfium-bootstrap
+            ~/.vpython-root
+            ~/.cipd
+          key: cipd-bootstrap-${{ runner.os }}-v2
+
+      - name: Restore Rust toolchain cache
+        id: cache-rust
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: rust-toolchain-${{ runner.os }}-v1
+
+      # ============ System Dependencies (from Dockerfile) ============
+      - name: Install base system packages
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            pkg-config autoconf automake libtool ragel git yasm \
+            subversion lsb-release tzdata tini \
+            curl build-essential rsync python3 python3-pip ninja-build
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # ============ Emscripten SDK 3.1.70 (from Dockerfile emsdk-base) ============
+      - name: Install Emscripten SDK 3.1.70
+        if: steps.cache-emsdk.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git /opt/emsdk
+          cd /opt/emsdk
+          ./emsdk install 3.1.70 --shallow
+          ./emsdk activate 3.1.70
+
+      - name: Setup Emscripten environment
+        run: |
+          cd /opt/emsdk
+          source ./emsdk_env.sh
+
+          # Add to PATH
+          echo "/opt/emsdk" >> $GITHUB_PATH
+          echo "/opt/emsdk/upstream/emscripten" >> $GITHUB_PATH
+          echo "/opt/emsdk/upstream/bin" >> $GITHUB_PATH
+
+          # Only export essential Emscripten vars (prevent env pollution)
+          echo "EMSDK=$EMSDK" >> $GITHUB_ENV
+          echo "EM_CONFIG=$EM_CONFIG" >> $GITHUB_ENV
+
+          # Verify
+          emcc --version
+
+      # ============ depot_tools (from Dockerfile depot-tools stage) ============
+      - name: Setup depot_tools
+        run: |
+          if [ ! -d "/opt/depot-tools" ]; then
+            git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git /opt/depot-tools
+          fi
+
+          echo "/opt/depot-tools" >> $GITHUB_PATH
+
+          # Verify installation
+          /opt/depot-tools/gclient --version
+
+      # ============ CIPD Bootstrap (from Dockerfile pdfium-bootstrap + build.sh) ============
+      - name: Bootstrap CIPD packages
+        if: steps.cache-cipd.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p /opt/pdfium-bootstrap
+          cd /opt/pdfium-bootstrap
+
+          gclient config --unmanaged https://pdfium.googlesource.com/pdfium.git
+          gclient sync --no-history --shallow
+
+          echo "✅ CIPD cache ready"
+
+      # ============ PDFium Build Dependencies (from Dockerfile pdfium-deps) ============
+      - name: Install PDFium build dependencies
+        run: |
+          cd /opt/pdfium-bootstrap
+          bash -x ./pdfium/build/install-build-deps.sh --no-prompt
+
+      # ============ Rust toolchain (from Dockerfile pdfium-deps) ============
+      - name: Install Rust toolchain with watchexec
+        if: steps.cache-rust.outputs.cache-hit != 'true'
+        run: |
+          curl -sSf https://sh.rustup.rs | bash -s -- -y
+          source "$HOME/.cargo/env"
+          cargo install --locked watchexec-cli
+          strip "$HOME/.cargo/bin/watchexec"
+          rm -rf "$HOME/.cargo/registry" "$HOME/.cargo/git"
+
+      - name: Add Rust to PATH
+        run: |
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      # ============ Run Build Script ============
+      - name: Build PDFium
+        env:
+          PRODUCT_LOCK: ${{ matrix.build_type == 'prod' && '1' || '0' }}
+        run: bash scripts/build.sh
+
+      # ============ Collect Artifacts ============
+      - name: Collect build artifacts
+        run: |
+          mkdir -p dist
+          cp -r build/wasm/* dist/ || true
+          cp pdfium-src/out/wasm/obj/libpdfium.a dist/ || true
+          cp -r src/vendor/* dist/ || true
+          
+          # Copy source files needed for rollup bundling
+          cp -r src dist/
+          cp package.json README.md rollup.config.js tsconfig.json dist/
+          
+          # Generate metadata
+          cat > dist/build-info.json <<EOF
+          {
+            "product_lock": "${{ matrix.build_type == 'prod' && '1' || '0' }}",
+            "build_timestamp": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')",
+            "workflow_run_id": "${{ github.run_id }}",
+            "workflow_run_number": "${{ github.run_number }}",
+            "git_commit": "${{ github.sha }}",
+            "repository": "${{ github.repository }}"
+          }
+          EOF
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdfium-wasm-build-${{ github.run_number }}-${{ matrix.build_type }}
+          path: dist/
+          retention-days: 7
+          compression-level: 9
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ github.run_number }}-${{ matrix.build_type }}
+          path: |
+            pdfium-src/out/wasm/*.log
+            build/wasm/*.log
+          if-no-files-found: ignore
+          retention-days: 3
+
+      # ============ Save Caches (always, even on failure) ============
+      - name: Save Emscripten SDK cache
+        uses: actions/cache/save@v4
+        if: always() && steps.cache-emsdk.outputs.cache-hit != 'true'
+        with:
+          path: /opt/emsdk
+          key: ${{ steps.cache-settings.outputs.key }}
+
+      - name: Save CIPD bootstrap cache
+        uses: actions/cache/save@v4
+        if: always() && steps.cache-cipd.outputs.cache-hit != 'true'
+        with:
+          path: |
+            /opt/pdfium-bootstrap
+            ~/.vpython-root
+            ~/.cipd
+          key: cipd-bootstrap-${{ runner.os }}-v2
+
+      - name: Save Rust toolchain cache
+        uses: actions/cache/save@v4
+        if: always() && steps.cache-rust.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: rust-toolchain-${{ runner.os }}-v1

@@ -1,0 +1,197 @@
+name: Release to Git Branch and Create GitHub Release
+
+on:
+  workflow_run:
+    workflows: ["PDFium WASM Build"]
+    types:
+      - completed
+    branches:
+      - main
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    environment: Production
+    strategy:
+      matrix:
+        lock_type: [dev, prod]
+    name: Release (${{ matrix.lock_type }})
+
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v6
+
+      # Only load SSH agent when releasing Dev target back to source repository
+      - name: Setup SSH agent for compilation target
+        if: ${{ matrix.lock_type == 'dev' }}
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+          name: pdfium-wasm-build-${{ github.event.workflow_run.run_number }}-${{ matrix.lock_type }}
+          path: artifacts/
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 8
+
+      - name: Run Package Packaging
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Backup pdfium-builder's simple README before artifacts overwrite it
+          cp README.md README.builder.md
+          
+          # Copy source project structure from artifacts
+          cp -r artifacts/* ./
+          
+          # Sync WASM files to src/vendor for Rollup bundling
+          mkdir -p src/vendor
+          cp pdfium.wasm pdfium.js pdfium.cjs src/vendor/ || true
+          
+          pnpm install
+          pnpm run build
+          
+          BUILD_INFO="build-info.json"
+          PRODUCT_LOCK=$(jq -r '.product_lock' "$BUILD_INFO")
+          BUILD_TIMESTAMP=$(jq -r '.build_timestamp' "$BUILD_INFO")
+          GIT_COMMIT=$(jq -r '.git_commit' "$BUILD_INFO")
+          RUN_NUMBER=$(jq -r '.workflow_run_number' "$BUILD_INFO")
+          
+          SHORT_COMMIT=${GIT_COMMIT:0:7}
+          
+          if [[ "$PRODUCT_LOCK" == "1" ]]; then
+            VERSION="1.0.0-${SHORT_COMMIT}"
+            BUILD_MODE="release (production lock)"
+            BRANCH_NAME="release"
+            TAG_NAME="v${VERSION}"
+            IS_PRERELEASE="false"
+            TITLE="PDFium WASM $VERSION"
+            REMOTE_URL="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          else
+            VERSION="1.0.0-${SHORT_COMMIT}-dev"
+            BUILD_MODE="dev (unlocked)"
+            BRANCH_NAME="release-dev"
+            TAG_NAME="v${VERSION}"
+            IS_PRERELEASE="true"
+            TITLE="PDFium WASM $VERSION (Development Build)"
+            REMOTE_URL="git@github.com:${{ secrets.SOURCE_REPOSITORY }}.git"
+          fi
+          
+          # CRITICAL SAFETY CHECK: Block push to main branch
+          if [[ -z "$BRANCH_NAME" || "$BRANCH_NAME" == "main" || "$BRANCH_NAME" == *"main"* ]]; then
+            echo "::error::Attempted to force push to main branch! Aborting."
+            exit 1
+          fi
+          
+          RELEASE_TEMP="release_temp"
+          rm -rf "$RELEASE_TEMP"
+          mkdir -p "$RELEASE_TEMP"
+          
+          if [ -d "dist" ]; then
+            cp -r dist "$RELEASE_TEMP/"
+          else
+            echo "::error::dist/ directory not found"
+            exit 1
+          fi
+          
+          if [ -f "package.json" ]; then
+            cp package.json "$RELEASE_TEMP/"
+          fi
+          if [[ "$PRODUCT_LOCK" == "1" ]]; then
+            cp README.builder.md "$RELEASE_TEMP/README.md"
+          else
+            if [ -f "README.md" ]; then
+              cp README.md "$RELEASE_TEMP/"
+            fi
+          fi
+          
+          (
+            cd "$RELEASE_TEMP"
+            git init
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            
+            git checkout -b "$BRANCH_NAME"
+            
+            SRC_REPO=""
+            if [ -f "package.json" ]; then
+              SRC_REPO=$(jq -r '.repository.url // empty' package.json | sed -E 's|https?://github.com/||' | sed 's|\.git||')
+              
+              PKG_VER="${VERSION#v}"
+              npm version "$PKG_VER" --no-git-tag-version --allow-same-version || true
+              if [[ "$PRODUCT_LOCK" == "1" ]]; then
+                jq '.repository.url = "https://github.com/${{ github.repository }}" | .homepage = "https://github.com/${{ github.repository }}#readme" | .bugs.url = "https://github.com/${{ github.repository }}/issues"' package.json > package.json.tmp && mv package.json.tmp package.json
+              else
+                jq '.description += " (Development Unlocked Build)"' package.json > package.json.tmp && mv package.json.tmp package.json
+              fi
+            fi
+            
+            git add .
+            git commit -F- <<EOF
+          chore: release PDFium WASM build
+          
+          Build Mode: ${BUILD_MODE}
+          Version: ${VERSION}
+          Commit: ${GIT_COMMIT}
+          Timestamp: ${BUILD_TIMESTAMP}
+          EOF
+            
+            git remote add origin "$REMOTE_URL"
+            git push --force origin "$BRANCH_NAME"
+            
+            # Setup Git credentials for tag deletes if we are on HTTP protocol (Prod builder)
+            if [[ "$PRODUCT_LOCK" == "1" ]]; then
+              if git ls-remote --tags origin | grep -q "refs/tags/$TAG_NAME"; then
+                git push origin --delete "$TAG_NAME" || true
+              fi
+              git tag "$TAG_NAME"
+              git push origin "$TAG_NAME"
+            else
+              # Dev version tags over SSH protocol
+              if git ls-remote --tags origin | grep -q "refs/tags/$TAG_NAME"; then
+                git push origin --delete "$TAG_NAME" || true
+              fi
+              git tag "$TAG_NAME"
+              git push origin "$TAG_NAME"
+            fi
+          )
+          
+          # Only publish public GitHub Releases for the production locked version
+          if [[ "$PRODUCT_LOCK" == "1" ]]; then
+            PRERELEASE_FLAG=""
+            if [ "$IS_PRERELEASE" == "true" ]; then
+              PRERELEASE_FLAG="--prerelease"
+            fi
+            
+            gh release delete "$TAG_NAME" -y --cleanup-tag || true
+            gh release create "$TAG_NAME" \
+              $PRERELEASE_FLAG \
+              --title "$TITLE" \
+              --notes-file - <<EOF
+          # PDFium WASM Build
+          
+          This is an automated compilation output of PDFium WebAssembly module with production domain lock enabled.
+          
+          - **Version**: $VERSION
+          - **Commit**: $GIT_COMMIT
+          - **Build Mode**: $BUILD_MODE
+          - **Timestamp**: $BUILD_TIMESTAMP
+          EOF
+          fi
