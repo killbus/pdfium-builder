@@ -25,6 +25,8 @@ jobs:
     steps:
       - name: Checkout builder repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       # Only load SSH agent when releasing Dev target back to source repository
       - name: Setup SSH agent for compilation target
@@ -54,6 +56,7 @@ jobs:
       - name: Run Package Packaging
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_BUILDER_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           # Backup pdfium-builder's simple README before artifacts overwrite it
           cp README.md README.builder.md
@@ -64,17 +67,42 @@ jobs:
           # Sync WASM files to src/vendor for Rollup bundling
           mkdir -p src/vendor
           cp pdfium.wasm pdfium.js pdfium.cjs src/vendor/ || true
-          
+
+          BUILD_INFO="build-info.json"
+          PRODUCT_LOCK=$(jq -er '.product_lock' "$BUILD_INFO")
+          BUILD_TIMESTAMP=$(jq -er '.build_timestamp' "$BUILD_INFO")
+          BUILDER_SHA=$(jq -er '.builder_sha | select(type == "string" and length > 0)' "$BUILD_INFO")
+          SOURCE_REPOSITORY_SHA=$(jq -er '.source_repository_sha | select(type == "string" and length > 0)' "$BUILD_INFO")
+          PDFIUM_SOURCE_SHA=$(jq -er '.pdfium_source_sha | select(type == "string" and length > 0)' "$BUILD_INFO")
+          FOCUSED_TEST_FILTER=$(jq -er '.focused_embedder_test.filter | select(type == "string" and length > 0)' "$BUILD_INFO")
+          FOCUSED_TEST_STATUS=$(jq -er '.focused_embedder_test.status' "$BUILD_INFO")
+          CHECKED_OUT_BUILDER_SHA=$(git rev-parse HEAD)
+
+          if [[ ! "$BUILDER_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+             [[ ! "$SOURCE_REPOSITORY_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+             [[ ! "$PDFIUM_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::build-info.json contains an invalid source revision"
+            exit 1
+          fi
+
+          if [[ "$BUILDER_SHA" != "$EXPECTED_BUILDER_SHA" ]] ||
+             [[ "$CHECKED_OUT_BUILDER_SHA" != "$EXPECTED_BUILDER_SHA" ]]; then
+            echo "::error::build-info.json does not match the triggering builder revision"
+            exit 1
+          fi
+
+          EXPECTED_FILTER="FPDFEditPageEmbedderTest.ReusableTextStampPreflightDoesNotAddObjects"
+          if [[ "$FOCUSED_TEST_STATUS" != "passed" ]] ||
+             [[ "$FOCUSED_TEST_FILTER" != "$EXPECTED_FILTER" ]]; then
+            echo "::error::build-info.json does not prove the focused native preflight"
+            exit 1
+          fi
+
           pnpm install
           pnpm run build
-          
-          BUILD_INFO="build-info.json"
-          PRODUCT_LOCK=$(jq -r '.product_lock' "$BUILD_INFO")
-          BUILD_TIMESTAMP=$(jq -r '.build_timestamp' "$BUILD_INFO")
-          GIT_COMMIT=$(jq -r '.git_commit' "$BUILD_INFO")
-          RUN_NUMBER=$(jq -r '.workflow_run_number' "$BUILD_INFO")
-          
-          SHORT_COMMIT=${GIT_COMMIT:0:7}
+          cp "$BUILD_INFO" dist/build-info.json
+
+          SHORT_COMMIT=${SOURCE_REPOSITORY_SHA:0:7}
           
           if [[ "$PRODUCT_LOCK" == "1" ]]; then
             VERSION="1.0.0-${SHORT_COMMIT}"
@@ -130,12 +158,8 @@ jobs:
             
             git checkout -b "$BRANCH_NAME"
             
-            SRC_REPO=""
             if [ -f "package.json" ]; then
-              SRC_REPO=$(jq -r '.repository.url // empty' package.json | sed -E 's|https?://github.com/||' | sed 's|\.git||')
-              
-              PKG_VER="${VERSION#v}"
-              npm version "$PKG_VER" --no-git-tag-version --allow-same-version || true
+              npm version "$VERSION" --no-git-tag-version --allow-same-version
               if [[ "$PRODUCT_LOCK" == "1" ]]; then
                 jq '.repository.url = "https://github.com/${{ github.repository }}" | .homepage = "https://github.com/${{ github.repository }}#readme" | .bugs.url = "https://github.com/${{ github.repository }}/issues"' package.json > package.json.tmp && mv package.json.tmp package.json
               else
@@ -149,7 +173,10 @@ jobs:
           
           Build Mode: ${BUILD_MODE}
           Version: ${VERSION}
-          Commit: ${GIT_COMMIT}
+          Builder Commit: ${BUILDER_SHA}
+          Source Commit: ${SOURCE_REPOSITORY_SHA}
+          PDFium Source Commit: ${PDFIUM_SOURCE_SHA}
+          Focused Native Test: ${FOCUSED_TEST_FILTER} (${FOCUSED_TEST_STATUS})
           Timestamp: ${BUILD_TIMESTAMP}
           EOF
             
@@ -190,7 +217,10 @@ jobs:
           This is an automated compilation output of PDFium WebAssembly module with production domain lock enabled.
           
           - **Version**: $VERSION
-          - **Commit**: $GIT_COMMIT
+          - **Builder Commit**: $BUILDER_SHA
+          - **Source Commit**: $SOURCE_REPOSITORY_SHA
+          - **PDFium Source Commit**: $PDFIUM_SOURCE_SHA
+          - **Focused Native Test**: $FOCUSED_TEST_FILTER ($FOCUSED_TEST_STATUS)
           - **Build Mode**: $BUILD_MODE
           - **Timestamp**: $BUILD_TIMESTAMP
           EOF

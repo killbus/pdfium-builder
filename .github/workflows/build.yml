@@ -16,9 +16,56 @@ permissions:
   actions: write
 
 jobs:
-  build:
+  native-preflight-test:
     runs-on: ubuntu-latest
     environment: Production
+    timeout-minutes: 120
+    name: Native preflight test
+    outputs:
+      source_repository_sha: ${{ steps.source-revisions.outputs.source_repository_sha }}
+      pdfium_source_sha: ${{ steps.source-revisions.outputs.pdfium_source_sha }}
+      focused_embedder_test_filter: ${{ steps.focused-test.outputs.filter }}
+    env:
+      ROOT: ${{ github.workspace }}
+      SRC: ${{ github.workspace }}/pdfium-src
+      NATIVE_OUT: ${{ github.workspace }}/pdfium-src/out/native-preflight
+
+    steps:
+      - name: Checkout compilation source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ secrets.SOURCE_REPOSITORY }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          submodules: 'recursive'
+
+      - name: Record tested source revisions
+        id: source-revisions
+        run: |
+          SOURCE_REPOSITORY_SHA=$(git rev-parse HEAD)
+          PDFIUM_SOURCE_SHA=$(git -C pdfium-src rev-parse HEAD)
+
+          echo "source_repository_sha=$SOURCE_REPOSITORY_SHA" >> "$GITHUB_OUTPUT"
+          echo "pdfium_source_sha=$PDFIUM_SOURCE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Setup depot_tools
+        run: |
+          git clone --depth 1 \
+            https://chromium.googlesource.com/chromium/tools/depot_tools.git \
+            /opt/depot-tools
+          echo "/opt/depot-tools" >> "$GITHUB_PATH"
+
+      - name: Build and run focused native regression
+        id: focused-test
+        run: |
+          bash ci/preflight.sh
+          FILTER=$(bash ci/preflight.sh --print-filter)
+          echo "filter=$FILTER" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: native-preflight-test
+    runs-on: ubuntu-latest
+    environment: Production
+    timeout-minutes: 120
     strategy:
       matrix:
         build_type: [dev, prod]
@@ -53,8 +100,31 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: ${{ secrets.SOURCE_REPOSITORY }}
+          ref: ${{ needs.native-preflight-test.outputs.source_repository_sha }}
           ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
           submodules: 'recursive'
+
+      - name: Verify tested source revisions
+        id: source-revisions
+        env:
+          EXPECTED_SOURCE_REPOSITORY_SHA: ${{ needs.native-preflight-test.outputs.source_repository_sha }}
+          EXPECTED_PDFIUM_SOURCE_SHA: ${{ needs.native-preflight-test.outputs.pdfium_source_sha }}
+        run: |
+          SOURCE_REPOSITORY_SHA=$(git rev-parse HEAD)
+          PDFIUM_SOURCE_SHA=$(git -C pdfium-src rev-parse HEAD)
+
+          if [[ "$SOURCE_REPOSITORY_SHA" != "$EXPECTED_SOURCE_REPOSITORY_SHA" ]]; then
+            echo "::error::Source checkout differs from native preflight"
+            exit 1
+          fi
+
+          if [[ "$PDFIUM_SOURCE_SHA" != "$EXPECTED_PDFIUM_SOURCE_SHA" ]]; then
+            echo "::error::PDFium submodule differs from native preflight"
+            exit 1
+          fi
+
+          echo "source_repository_sha=$SOURCE_REPOSITORY_SHA" >> "$GITHUB_OUTPUT"
+          echo "pdfium_source_sha=$PDFIUM_SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
       # ============ Cache Strategy (restore-only, save separately) ============
       - name: Setup cache key
@@ -194,16 +264,30 @@ jobs:
           cp package.json README.md rollup.config.js tsconfig.json dist/
           
           # Generate metadata
-          cat > dist/build-info.json <<EOF
-          {
-            "product_lock": "${{ matrix.build_type == 'prod' && '1' || '0' }}",
-            "build_timestamp": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')",
-            "workflow_run_id": "${{ github.run_id }}",
-            "workflow_run_number": "${{ github.run_number }}",
-            "git_commit": "${{ github.sha }}",
-            "repository": "${{ github.repository }}"
-          }
-          EOF
+          jq -n \
+            --arg product_lock "${{ matrix.build_type == 'prod' && '1' || '0' }}" \
+            --arg build_timestamp "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            --arg workflow_run_id "${{ github.run_id }}" \
+            --arg workflow_run_number "${{ github.run_number }}" \
+            --arg repository "${{ github.repository }}" \
+            --arg builder_sha "${{ github.sha }}" \
+            --arg source_repository_sha "${{ steps.source-revisions.outputs.source_repository_sha }}" \
+            --arg pdfium_source_sha "${{ steps.source-revisions.outputs.pdfium_source_sha }}" \
+            --arg focused_filter "${{ needs.native-preflight-test.outputs.focused_embedder_test_filter }}" \
+            '{
+              product_lock: $product_lock,
+              build_timestamp: $build_timestamp,
+              workflow_run_id: $workflow_run_id,
+              workflow_run_number: $workflow_run_number,
+              repository: $repository,
+              builder_sha: $builder_sha,
+              source_repository_sha: $source_repository_sha,
+              pdfium_source_sha: $pdfium_source_sha,
+              focused_embedder_test: {
+                filter: $focused_filter,
+                status: "passed"
+              }
+            }' > dist/build-info.json
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
