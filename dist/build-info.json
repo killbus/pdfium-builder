@@ -1,0 +1,14 @@
+{
+  "product_lock": "1",
+  "build_timestamp": "2026-07-13T17:00:15Z",
+  "workflow_run_id": "29267250533",
+  "workflow_run_number": "48",
+  "repository": "killbus/pdfium-builder",
+  "builder_sha": "498313ab038dfb7d014161552580d2ab6d125d9e",
+  "source_repository_sha": "e7ae8ceadfcd6a5e5eaa8cfd2cff5d40f88f5761",
+  "pdfium_source_sha": "0e484dd4dedb774bacbf7d5ce7a4549476bf1f17",
+  "focused_embedder_test": {
+    "filter": "FPDFEditPageEmbedderTest.ReusableTextStampPreflightDoesNotAddObjects:FPDFEditPageEmbedderTest.ReusableTextFormCanBeSharedAcrossPages:FPDFEditPageEmbedderTest.ReusableTextFormsRetainSharedEmbeddedFontAfterClose:FPDFEditPageEmbedderTest.ReusableTextFormRejectsFontOwnedByDifferentDocument:FPDFEditPageEmbedderTest.ReusableTextFormRejectsInvalidInputs",
+    "status": "passed"
+  }
+}
