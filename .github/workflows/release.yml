@@ -91,7 +91,7 @@ jobs:
             exit 1
           fi
 
-          EXPECTED_FILTER="FPDFEditPageEmbedderTest.ReusableTextStampPreflightDoesNotAddObjects"
+          EXPECTED_FILTER="FPDFEditPageEmbedderTest.ReusableTextStampPreflightDoesNotAddObjects:FPDFEditPageEmbedderTest.ReusableTextFormCanBeSharedAcrossPages:FPDFEditPageEmbedderTest.ReusableTextFormsRetainSharedEmbeddedFontAfterClose:FPDFEditPageEmbedderTest.ReusableTextFormRejectsFontOwnedByDifferentDocument:FPDFEditPageEmbedderTest.ReusableTextFormRejectsInvalidInputs"
           if [[ "$FOCUSED_TEST_STATUS" != "passed" ]] ||
              [[ "$FOCUSED_TEST_FILTER" != "$EXPECTED_FILTER" ]]; then
             echo "::error::build-info.json does not prove the focused native preflight"
