@@ -1,0 +1,23 @@
+{
+  "artifact_status": "accepted",
+  "build_type": "prod",
+  "product_lock": "1",
+  "build_timestamp": "2026-07-14T08:58:11Z",
+  "workflow_run_id": "29319314007",
+  "workflow_run_number": "51",
+  "workflow_run_attempt": "1",
+  "repository": "killbus/pdfium-builder",
+  "builder_sha": "33f7758511678aaaddd979f5cba8fae570ed0dc6",
+  "source_repository_sha": "7897046058bdcae9cea216c3804c8617fad66c10",
+  "pdfium_source_sha": "07a10d2c188287aa94f8d273f2eebb2edba787a5",
+  "candidate_artifact": {
+    "name": "pdfium-wasm-candidate-29319314007-1-prod",
+    "id": "8305472849",
+    "digest": "94cdff7804e62abf447bb7ceff34ee15fd343ab919266b77dd5dec9b58e54799"
+  },
+  "accepted_at": "2026-07-14T09:00:27Z",
+  "focused_embedder_test": {
+    "filter": "FPDFEditPageEmbedderTest.ReusableTextStampPreflightDoesNotAddObjects:FPDFEditPageEmbedderTest.ReusableTextFormCanBeSharedAcrossPages:FPDFEditPageEmbedderTest.ReusableTextFormsRetainSharedEmbeddedFontAfterClose:FPDFEditPageEmbedderTest.ReusableTextFormRejectsFontOwnedByDifferentDocument:FPDFEditPageEmbedderTest.ReusableTextFormRejectsInvalidInputs",
+    "status": "passed"
+  }
+}
