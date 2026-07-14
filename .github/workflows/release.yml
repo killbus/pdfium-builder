@@ -9,6 +9,7 @@ on:
       - main
 
 permissions:
+  actions: read
   contents: write
   id-token: write
 
@@ -18,9 +19,21 @@ jobs:
     runs-on: ubuntu-latest
     environment: Production
     strategy:
+      fail-fast: false
       matrix:
         lock_type: [dev, prod]
     name: Release (${{ matrix.lock_type }})
+    concurrency:
+      group: pdfium-release-${{ matrix.lock_type }}
+      cancel-in-progress: false
+    env:
+      EXPECTED_BUILDER_SHA: ${{ github.event.workflow_run.head_sha }}
+      EXPECTED_BUILD_TYPE: ${{ matrix.lock_type }}
+      EXPECTED_REPOSITORY: ${{ github.repository }}
+      EXPECTED_WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+      EXPECTED_WORKFLOW_RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+      EXPECTED_WORKFLOW_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+      TRIGGER_WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
 
     steps:
       - name: Checkout builder repository
@@ -35,13 +48,34 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
 
-      - name: Download build artifacts
+      - name: Download candidate artifacts
         uses: actions/download-artifact@v4
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ github.event.workflow_run.id }}
-          name: pdfium-wasm-build-${{ github.event.workflow_run.run_number }}-${{ matrix.lock_type }}
+          name: pdfium-wasm-candidate-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}-${{ matrix.lock_type }}
           path: artifacts/
+
+      - name: Download accepted build manifests
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+          name: pdfium-wasm-acceptance-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+          path: acceptance/
+
+      - name: Validate release manifests
+        run: |
+          bash ci/build-info-contract.sh validate-release-pair \
+            --candidate artifacts/build-info.json \
+            --accepted "acceptance/${EXPECTED_BUILD_TYPE}/build-info.json" \
+            --build-type "$EXPECTED_BUILD_TYPE" \
+            --repository "$EXPECTED_REPOSITORY" \
+            --builder-sha "$EXPECTED_BUILDER_SHA" \
+            --checked-out-builder-sha "$(git rev-parse HEAD)" \
+            --workflow-run-id "$EXPECTED_WORKFLOW_RUN_ID" \
+            --workflow-run-number "$EXPECTED_WORKFLOW_RUN_NUMBER" \
+            --workflow-run-attempt "$EXPECTED_WORKFLOW_RUN_ATTEMPT"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -53,175 +87,16 @@ jobs:
         with:
           version: 8
 
-      - name: Run Package Packaging
+      - name: Promote accepted build
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EXPECTED_BUILDER_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          # Backup pdfium-builder's simple README before artifacts overwrite it
-          cp README.md README.builder.md
-          
-          # Copy source project structure from artifacts
-          cp -r artifacts/* ./
-          
-          # Sync WASM files to src/vendor for Rollup bundling
-          mkdir -p src/vendor
-          cp pdfium.wasm pdfium.js pdfium.cjs src/vendor/ || true
-
-          BUILD_INFO="build-info.json"
-          PRODUCT_LOCK=$(jq -er '.product_lock' "$BUILD_INFO")
-          BUILD_TIMESTAMP=$(jq -er '.build_timestamp' "$BUILD_INFO")
-          BUILDER_SHA=$(jq -er '.builder_sha | select(type == "string" and length > 0)' "$BUILD_INFO")
-          SOURCE_REPOSITORY_SHA=$(jq -er '.source_repository_sha | select(type == "string" and length > 0)' "$BUILD_INFO")
-          PDFIUM_SOURCE_SHA=$(jq -er '.pdfium_source_sha | select(type == "string" and length > 0)' "$BUILD_INFO")
-          FOCUSED_TEST_FILTER=$(jq -er '.focused_embedder_test.filter | select(type == "string" and length > 0)' "$BUILD_INFO")
-          FOCUSED_TEST_STATUS=$(jq -er '.focused_embedder_test.status' "$BUILD_INFO")
-          CHECKED_OUT_BUILDER_SHA=$(git rev-parse HEAD)
-
-          if [[ ! "$BUILDER_SHA" =~ ^[0-9a-f]{40}$ ]] ||
-             [[ ! "$SOURCE_REPOSITORY_SHA" =~ ^[0-9a-f]{40}$ ]] ||
-             [[ ! "$PDFIUM_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::build-info.json contains an invalid source revision"
-            exit 1
-          fi
-
-          if [[ "$BUILDER_SHA" != "$EXPECTED_BUILDER_SHA" ]] ||
-             [[ "$CHECKED_OUT_BUILDER_SHA" != "$EXPECTED_BUILDER_SHA" ]]; then
-            echo "::error::build-info.json does not match the triggering builder revision"
-            exit 1
-          fi
-
-          EXPECTED_FILTER="FPDFEditPageEmbedderTest.ReusableTextStampPreflightDoesNotAddObjects:FPDFEditPageEmbedderTest.ReusableTextFormCanBeSharedAcrossPages:FPDFEditPageEmbedderTest.ReusableTextFormsRetainSharedEmbeddedFontAfterClose:FPDFEditPageEmbedderTest.ReusableTextFormRejectsFontOwnedByDifferentDocument:FPDFEditPageEmbedderTest.ReusableTextFormRejectsInvalidInputs"
-          if [[ "$FOCUSED_TEST_STATUS" != "passed" ]] ||
-             [[ "$FOCUSED_TEST_FILTER" != "$EXPECTED_FILTER" ]]; then
-            echo "::error::build-info.json does not prove the focused native preflight"
-            exit 1
-          fi
-
-          pnpm install
-          pnpm run build
-          cp "$BUILD_INFO" dist/build-info.json
-
-          SHORT_COMMIT=${SOURCE_REPOSITORY_SHA:0:7}
-          
-          if [[ "$PRODUCT_LOCK" == "1" ]]; then
-            VERSION="1.0.0-${SHORT_COMMIT}"
-            BUILD_MODE="release (production lock)"
-            BRANCH_NAME="release"
-            TAG_NAME="v${VERSION}"
-            IS_PRERELEASE="false"
-            TITLE="PDFium WASM $VERSION"
-            REMOTE_URL="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
-          else
-            VERSION="1.0.0-${SHORT_COMMIT}-dev"
-            BUILD_MODE="dev (unlocked)"
-            BRANCH_NAME="release-dev"
-            TAG_NAME="v${VERSION}"
-            IS_PRERELEASE="true"
-            TITLE="PDFium WASM $VERSION (Development Build)"
-            REMOTE_URL="git@github.com:${{ secrets.SOURCE_REPOSITORY }}.git"
-          fi
-          
-          # CRITICAL SAFETY CHECK: Block push to main branch
-          if [[ -z "$BRANCH_NAME" || "$BRANCH_NAME" == "main" || "$BRANCH_NAME" == *"main"* ]]; then
-            echo "::error::Attempted to force push to main branch! Aborting."
-            exit 1
-          fi
-          
-          RELEASE_TEMP="release_temp"
-          rm -rf "$RELEASE_TEMP"
-          mkdir -p "$RELEASE_TEMP"
-          
-          if [ -d "dist" ]; then
-            cp -r dist "$RELEASE_TEMP/"
-          else
-            echo "::error::dist/ directory not found"
-            exit 1
-          fi
-          
-          if [ -f "package.json" ]; then
-            cp package.json "$RELEASE_TEMP/"
-          fi
-          if [[ "$PRODUCT_LOCK" == "1" ]]; then
-            cp README.builder.md "$RELEASE_TEMP/README.md"
-          else
-            if [ -f "README.md" ]; then
-              cp README.md "$RELEASE_TEMP/"
-            fi
-          fi
-          
-          (
-            cd "$RELEASE_TEMP"
-            git init
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            
-            git checkout -b "$BRANCH_NAME"
-            
-            if [ -f "package.json" ]; then
-              npm version "$VERSION" --no-git-tag-version --allow-same-version
-              if [[ "$PRODUCT_LOCK" == "1" ]]; then
-                jq '.repository.url = "https://github.com/${{ github.repository }}" | .homepage = "https://github.com/${{ github.repository }}#readme" | .bugs.url = "https://github.com/${{ github.repository }}/issues"' package.json > package.json.tmp && mv package.json.tmp package.json
-              else
-                jq '.description += " (Development Unlocked Build)"' package.json > package.json.tmp && mv package.json.tmp package.json
-              fi
-            fi
-            
-            git add .
-            git commit -F- <<EOF
-          chore: release PDFium WASM build
-          
-          Build Mode: ${BUILD_MODE}
-          Version: ${VERSION}
-          Builder Commit: ${BUILDER_SHA}
-          Source Commit: ${SOURCE_REPOSITORY_SHA}
-          PDFium Source Commit: ${PDFIUM_SOURCE_SHA}
-          Focused Native Test: ${FOCUSED_TEST_FILTER} (${FOCUSED_TEST_STATUS})
-          Timestamp: ${BUILD_TIMESTAMP}
-          EOF
-            
-            git remote add origin "$REMOTE_URL"
-            git push --force origin "$BRANCH_NAME"
-            
-            # Setup Git credentials for tag deletes if we are on HTTP protocol (Prod builder)
-            if [[ "$PRODUCT_LOCK" == "1" ]]; then
-              if git ls-remote --tags origin | grep -q "refs/tags/$TAG_NAME"; then
-                git push origin --delete "$TAG_NAME" || true
-              fi
-              git tag "$TAG_NAME"
-              git push origin "$TAG_NAME"
-            else
-              # Dev version tags over SSH protocol
-              if git ls-remote --tags origin | grep -q "refs/tags/$TAG_NAME"; then
-                git push origin --delete "$TAG_NAME" || true
-              fi
-              git tag "$TAG_NAME"
-              git push origin "$TAG_NAME"
-            fi
-          )
-          
-          # Only publish public GitHub Releases for the production locked version
-          if [[ "$PRODUCT_LOCK" == "1" ]]; then
-            PRERELEASE_FLAG=""
-            if [ "$IS_PRERELEASE" == "true" ]; then
-              PRERELEASE_FLAG="--prerelease"
-            fi
-            
-            gh release delete "$TAG_NAME" -y --cleanup-tag || true
-            gh release create "$TAG_NAME" \
-              $PRERELEASE_FLAG \
-              --title "$TITLE" \
-              --notes-file - <<EOF
-          # PDFium WASM Build
-          
-          This is an automated compilation output of PDFium WebAssembly module with production domain lock enabled.
-          
-          - **Version**: $VERSION
-          - **Builder Commit**: $BUILDER_SHA
-          - **Source Commit**: $SOURCE_REPOSITORY_SHA
-          - **PDFium Source Commit**: $PDFIUM_SOURCE_SHA
-          - **Focused Native Test**: $FOCUSED_TEST_FILTER ($FOCUSED_TEST_STATUS)
-          - **Build Mode**: $BUILD_MODE
-          - **Timestamp**: $BUILD_TIMESTAMP
-          EOF
-          fi
+          bash ci/promote-accepted-build.sh \
+            --artifact-dir artifacts \
+            --accepted-manifest "acceptance/${EXPECTED_BUILD_TYPE}/build-info.json" \
+            --build-type "$EXPECTED_BUILD_TYPE" \
+            --repository "$EXPECTED_REPOSITORY" \
+            --source-repository "${{ secrets.SOURCE_REPOSITORY }}" \
+            --workflow-id "$TRIGGER_WORKFLOW_ID" \
+            --workflow-run-id "$EXPECTED_WORKFLOW_RUN_ID" \
+            --workflow-run-attempt "$EXPECTED_WORKFLOW_RUN_ATTEMPT"

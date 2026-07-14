@@ -16,14 +16,64 @@ permissions:
   actions: write
 
 jobs:
+  resolve-source-revisions:
+    runs-on: ubuntu-latest
+    environment: Production
+    timeout-minutes: 10
+    name: Resolve source revisions
+    outputs:
+      source_repository_sha: ${{ steps.source-revisions.outputs.source_repository_sha }}
+      pdfium_source_sha: ${{ steps.source-revisions.outputs.pdfium_source_sha }}
+
+    steps:
+      - name: Checkout compilation source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ secrets.SOURCE_REPOSITORY }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          submodules: 'false'
+
+      - name: Resolve immutable source revisions
+        id: source-revisions
+        run: |
+          SOURCE_REPOSITORY_SHA=$(git rev-parse HEAD)
+          PDFIUM_ENTRY=$(git ls-tree HEAD -- pdfium-src)
+          PDFIUM_MODE=$(awk '{print $1}' <<< "$PDFIUM_ENTRY")
+          PDFIUM_SOURCE_SHA=$(awk '{print $3}' <<< "$PDFIUM_ENTRY")
+
+          if [[ ! "$SOURCE_REPOSITORY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Source repository did not resolve to a commit SHA"
+            exit 1
+          fi
+
+          if [[ "$PDFIUM_MODE" != "160000" ]] ||
+             [[ ! "$PDFIUM_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::pdfium-src is not a pinned Git submodule"
+            exit 1
+          fi
+
+          echo "source_repository_sha=$SOURCE_REPOSITORY_SHA" >> "$GITHUB_OUTPUT"
+          echo "pdfium_source_sha=$PDFIUM_SOURCE_SHA" >> "$GITHUB_OUTPUT"
+
+  build-info-contract-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    name: Build-info contract test
+
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v6
+
+      - name: Test build-info contract
+        run: bash ci/run-tests.sh
+
   native-preflight-test:
+    needs: resolve-source-revisions
     runs-on: ubuntu-latest
     environment: Production
     timeout-minutes: 120
     name: Native preflight test
     outputs:
-      source_repository_sha: ${{ steps.source-revisions.outputs.source_repository_sha }}
-      pdfium_source_sha: ${{ steps.source-revisions.outputs.pdfium_source_sha }}
       focused_embedder_test_filter: ${{ steps.focused-test.outputs.filter }}
     env:
       ROOT: ${{ github.workspace }}
@@ -35,17 +85,27 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: ${{ secrets.SOURCE_REPOSITORY }}
+          ref: ${{ needs.resolve-source-revisions.outputs.source_repository_sha }}
           ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
           submodules: 'recursive'
 
-      - name: Record tested source revisions
-        id: source-revisions
+      - name: Verify resolved source revisions
+        env:
+          EXPECTED_SOURCE_REPOSITORY_SHA: ${{ needs.resolve-source-revisions.outputs.source_repository_sha }}
+          EXPECTED_PDFIUM_SOURCE_SHA: ${{ needs.resolve-source-revisions.outputs.pdfium_source_sha }}
         run: |
           SOURCE_REPOSITORY_SHA=$(git rev-parse HEAD)
           PDFIUM_SOURCE_SHA=$(git -C pdfium-src rev-parse HEAD)
 
-          echo "source_repository_sha=$SOURCE_REPOSITORY_SHA" >> "$GITHUB_OUTPUT"
-          echo "pdfium_source_sha=$PDFIUM_SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          if [[ "$SOURCE_REPOSITORY_SHA" != "$EXPECTED_SOURCE_REPOSITORY_SHA" ]]; then
+            echo "::error::Source checkout differs from the resolved revision"
+            exit 1
+          fi
+
+          if [[ "$PDFIUM_SOURCE_SHA" != "$EXPECTED_PDFIUM_SOURCE_SHA" ]]; then
+            echo "::error::PDFium submodule differs from the resolved revision"
+            exit 1
+          fi
 
       - name: Setup depot_tools
         run: |
@@ -62,14 +122,15 @@ jobs:
           echo "filter=$FILTER" >> "$GITHUB_OUTPUT"
 
   build:
-    needs: native-preflight-test
+    needs: resolve-source-revisions
     runs-on: ubuntu-latest
     environment: Production
     timeout-minutes: 120
     strategy:
+      fail-fast: false
       matrix:
         build_type: [dev, prod]
-    name: Build (${{ matrix.build_type }})
+    name: Candidate build (${{ matrix.build_type }})
     env:
       # Build paths
       ROOT: ${{ github.workspace }}
@@ -100,31 +161,37 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: ${{ secrets.SOURCE_REPOSITORY }}
-          ref: ${{ needs.native-preflight-test.outputs.source_repository_sha }}
+          ref: ${{ needs.resolve-source-revisions.outputs.source_repository_sha }}
           ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
           submodules: 'recursive'
 
-      - name: Verify tested source revisions
+      - name: Verify resolved source revisions
         id: source-revisions
         env:
-          EXPECTED_SOURCE_REPOSITORY_SHA: ${{ needs.native-preflight-test.outputs.source_repository_sha }}
-          EXPECTED_PDFIUM_SOURCE_SHA: ${{ needs.native-preflight-test.outputs.pdfium_source_sha }}
+          EXPECTED_SOURCE_REPOSITORY_SHA: ${{ needs.resolve-source-revisions.outputs.source_repository_sha }}
+          EXPECTED_PDFIUM_SOURCE_SHA: ${{ needs.resolve-source-revisions.outputs.pdfium_source_sha }}
         run: |
           SOURCE_REPOSITORY_SHA=$(git rev-parse HEAD)
           PDFIUM_SOURCE_SHA=$(git -C pdfium-src rev-parse HEAD)
 
           if [[ "$SOURCE_REPOSITORY_SHA" != "$EXPECTED_SOURCE_REPOSITORY_SHA" ]]; then
-            echo "::error::Source checkout differs from native preflight"
+            echo "::error::Source checkout differs from the resolved revision"
             exit 1
           fi
 
           if [[ "$PDFIUM_SOURCE_SHA" != "$EXPECTED_PDFIUM_SOURCE_SHA" ]]; then
-            echo "::error::PDFium submodule differs from native preflight"
+            echo "::error::PDFium submodule differs from the resolved revision"
             exit 1
           fi
 
           echo "source_repository_sha=$SOURCE_REPOSITORY_SHA" >> "$GITHUB_OUTPUT"
           echo "pdfium_source_sha=$PDFIUM_SOURCE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout builder automation
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .builder-ci
 
       # ============ Cache Strategy (restore-only, save separately) ============
       - name: Setup cache key
@@ -246,9 +313,13 @@ jobs:
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       # ============ Run Build Script ============
+      - name: Resolve product lock
+        run: |
+          PRODUCT_LOCK=$(bash .builder-ci/ci/build-info-contract.sh print-product-lock \
+            --build-type "${{ matrix.build_type }}")
+          echo "PRODUCT_LOCK=$PRODUCT_LOCK" >> "$GITHUB_ENV"
+
       - name: Build PDFium
-        env:
-          PRODUCT_LOCK: ${{ matrix.build_type == 'prod' && '1' || '0' }}
         run: bash scripts/build.sh
 
       # ============ Collect Artifacts ============
@@ -263,45 +334,49 @@ jobs:
           cp -r src dist/
           cp package.json README.md rollup.config.js tsconfig.json dist/
           
-          # Generate metadata
-          jq -n \
-            --arg product_lock "${{ matrix.build_type == 'prod' && '1' || '0' }}" \
-            --arg build_timestamp "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
-            --arg workflow_run_id "${{ github.run_id }}" \
-            --arg workflow_run_number "${{ github.run_number }}" \
-            --arg repository "${{ github.repository }}" \
-            --arg builder_sha "${{ github.sha }}" \
-            --arg source_repository_sha "${{ steps.source-revisions.outputs.source_repository_sha }}" \
-            --arg pdfium_source_sha "${{ steps.source-revisions.outputs.pdfium_source_sha }}" \
-            --arg focused_filter "${{ needs.native-preflight-test.outputs.focused_embedder_test_filter }}" \
-            '{
-              product_lock: $product_lock,
-              build_timestamp: $build_timestamp,
-              workflow_run_id: $workflow_run_id,
-              workflow_run_number: $workflow_run_number,
-              repository: $repository,
-              builder_sha: $builder_sha,
-              source_repository_sha: $source_repository_sha,
-              pdfium_source_sha: $pdfium_source_sha,
-              focused_embedder_test: {
-                filter: $focused_filter,
-                status: "passed"
-              }
-            }' > dist/build-info.json
+          bash .builder-ci/ci/build-info-contract.sh create-candidate \
+            --output dist/build-info.json \
+            --build-type "${{ matrix.build_type }}" \
+            --build-timestamp "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            --workflow-run-id "${{ github.run_id }}" \
+            --workflow-run-number "${{ github.run_number }}" \
+            --workflow-run-attempt "${{ github.run_attempt }}" \
+            --repository "${{ github.repository }}" \
+            --builder-sha "${{ github.sha }}" \
+            --source-repository-sha "${{ steps.source-revisions.outputs.source_repository_sha }}" \
+            --pdfium-source-sha "${{ steps.source-revisions.outputs.pdfium_source_sha }}"
 
-      - name: Upload build artifacts
+      - name: Upload candidate artifacts
+        id: upload-candidate
         uses: actions/upload-artifact@v4
         with:
-          name: pdfium-wasm-build-${{ github.run_number }}-${{ matrix.build_type }}
+          name: pdfium-wasm-candidate-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.build_type }}
           path: dist/
           retention-days: 7
           compression-level: 9
+
+      - name: Record candidate artifact evidence
+        run: |
+          bash .builder-ci/ci/build-info-contract.sh attach-candidate-artifact \
+            --candidate dist/build-info.json \
+            --output candidate-evidence/${{ matrix.build_type }}.json \
+            --artifact-name "pdfium-wasm-candidate-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.build_type }}" \
+            --artifact-id "${{ steps.upload-candidate.outputs.artifact-id }}" \
+            --artifact-digest "${{ steps.upload-candidate.outputs.artifact-digest }}"
+
+      - name: Upload candidate evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdfium-wasm-candidate-evidence-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.build_type }}
+          path: candidate-evidence/${{ matrix.build_type }}.json
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Upload build logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs-${{ github.run_number }}-${{ matrix.build_type }}
+          name: build-logs-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.build_type }}
           path: |
             pdfium-src/out/wasm/*.log
             build/wasm/*.log
@@ -335,3 +410,58 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
           key: rust-toolchain-${{ runner.os }}-v1
+
+  accept-candidates:
+    needs:
+      - resolve-source-revisions
+      - build-info-contract-test
+      - native-preflight-test
+      - build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    name: Accept candidate builds
+    env:
+      EXPECTED_BUILDER_SHA: ${{ github.sha }}
+      EXPECTED_SOURCE_REPOSITORY_SHA: ${{ needs.resolve-source-revisions.outputs.source_repository_sha }}
+      EXPECTED_PDFIUM_SOURCE_SHA: ${{ needs.resolve-source-revisions.outputs.pdfium_source_sha }}
+      EXPECTED_REPOSITORY: ${{ github.repository }}
+      EXPECTED_WORKFLOW_RUN_ID: ${{ github.run_id }}
+      EXPECTED_WORKFLOW_RUN_NUMBER: ${{ github.run_number }}
+      EXPECTED_WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
+      FOCUSED_TEST_FILTER: ${{ needs.native-preflight-test.outputs.focused_embedder_test_filter }}
+
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Download candidate evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pdfium-wasm-candidate-evidence-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: candidate-evidence
+          merge-multiple: true
+
+      - name: Validate and accept candidates
+        run: |
+          bash ci/build-info-contract.sh accept-candidate-set \
+            --evidence-dir candidate-evidence \
+            --output-dir accepted \
+            --accepted-at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            --focused-test-filter "$FOCUSED_TEST_FILTER" \
+            --repository "$EXPECTED_REPOSITORY" \
+            --builder-sha "$EXPECTED_BUILDER_SHA" \
+            --source-repository-sha "$EXPECTED_SOURCE_REPOSITORY_SHA" \
+            --pdfium-source-sha "$EXPECTED_PDFIUM_SOURCE_SHA" \
+            --workflow-run-id "$EXPECTED_WORKFLOW_RUN_ID" \
+            --workflow-run-number "$EXPECTED_WORKFLOW_RUN_NUMBER" \
+            --workflow-run-attempt "$EXPECTED_WORKFLOW_RUN_ATTEMPT"
+
+      - name: Upload accepted build manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdfium-wasm-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: accepted/
+          if-no-files-found: error
+          retention-days: 7
