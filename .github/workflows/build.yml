@@ -4,57 +4,96 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch:
+  repository_dispatch:
+    types:
+      - source-release-set-v1
 
-# Prevent concurrent builds
 concurrency:
-  group: pdfium-build-${{ github.ref }}
+  group: pdfium-build-${{ github.event.client_payload.release_id || github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
-  actions: write
 
 jobs:
-  resolve-source-revisions:
+  resolve-release-set:
+    if: ${{ github.event_name == 'repository_dispatch' }}
     runs-on: ubuntu-latest
-    environment: Production
+    environment: Candidate Build
     timeout-minutes: 10
-    name: Resolve source revisions
+    name: Resolve release set
     outputs:
-      source_repository_sha: ${{ steps.source-revisions.outputs.source_repository_sha }}
-      pdfium_source_sha: ${{ steps.source-revisions.outputs.pdfium_source_sha }}
+      contract_version: ${{ steps.contract.outputs.contract_version }}
+      source_revision: ${{ steps.contract.outputs.source_revision }}
+      release_id: ${{ steps.contract.outputs.release_id }}
+      targets: ${{ steps.contract.outputs.targets }}
+      pdfium_source_sha: ${{ steps.source.outputs.pdfium_source_sha }}
 
     steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Validate dispatched contract
+        id: contract
+        env:
+          CONFIGURED_SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
+          CONTRACT_VERSION: ${{ github.event.client_payload.contract_version }}
+          SOURCE_REVISION: ${{ github.event.client_payload.source_revision }}
+          RELEASE_ID: ${{ github.event.client_payload.release_id }}
+          DISPATCH_MANIFEST: ${{ toJSON(github.event.client_payload.manifest) }}
+        run: |
+          [[ "$CONFIGURED_SOURCE_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
+            echo "::error::Candidate Build secret SOURCE_REPOSITORY is missing or invalid"
+            exit 1
+          }
+          printf '%s\n' "$DISPATCH_MANIFEST" > release-set.json
+          bash ci/build-info-contract.sh validate-source-manifest \
+            --manifest release-set.json \
+            --contract-version "$CONTRACT_VERSION" \
+            --source-revision "$SOURCE_REVISION" \
+            --release-id "$RELEASE_ID"
+          {
+            echo "contract_version=$CONTRACT_VERSION"
+            echo "source_revision=$SOURCE_REVISION"
+            echo "release_id=$RELEASE_ID"
+            echo "targets=$(bash ci/build-info-contract.sh print-release-matrix \
+              --manifest release-set.json \
+              --contract-version "$CONTRACT_VERSION" \
+              --source-revision "$SOURCE_REVISION" \
+              --release-id "$RELEASE_ID")"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Checkout compilation source
         uses: actions/checkout@v6
         with:
+          persist-credentials: false
           repository: ${{ secrets.SOURCE_REPOSITORY }}
-          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          ref: ${{ steps.contract.outputs.source_revision }}
+          path: source
+          ssh-key: ${{ secrets.SOURCE_READ_DEPLOY_KEY }}
           submodules: 'false'
 
-      - name: Resolve immutable source revisions
-        id: source-revisions
+      - name: Verify pinned source contract
+        id: source
+        env:
+          SOURCE_REVISION: ${{ steps.contract.outputs.source_revision }}
+          RELEASE_ID: ${{ steps.contract.outputs.release_id }}
         run: |
-          SOURCE_REPOSITORY_SHA=$(git rev-parse HEAD)
-          PDFIUM_ENTRY=$(git ls-tree HEAD -- pdfium-src)
+          python3 source/build/release_set.py --repo-root source verify \
+            --source-revision "$SOURCE_REVISION" \
+            --manifest release-set.json \
+            --release-id "$RELEASE_ID"
+          PDFIUM_ENTRY=$(git -C source ls-tree HEAD -- pdfium-src)
           PDFIUM_MODE=$(awk '{print $1}' <<< "$PDFIUM_ENTRY")
           PDFIUM_SOURCE_SHA=$(awk '{print $3}' <<< "$PDFIUM_ENTRY")
-
-          if [[ ! "$SOURCE_REPOSITORY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::Source repository did not resolve to a commit SHA"
-            exit 1
-          fi
-
           if [[ "$PDFIUM_MODE" != "160000" ]] ||
              [[ ! "$PDFIUM_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::pdfium-src is not a pinned Git submodule"
             exit 1
           fi
-
-          echo "source_repository_sha=$SOURCE_REPOSITORY_SHA" >> "$GITHUB_OUTPUT"
           echo "pdfium_source_sha=$PDFIUM_SOURCE_SHA" >> "$GITHUB_OUTPUT"
-
   build-info-contract-test:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -63,14 +102,20 @@ jobs:
     steps:
       - name: Checkout builder repository
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Prepare candidate transport tooling
+        run: bash ci/install-age.sh
 
       - name: Test build-info contract
         run: bash ci/run-tests.sh
 
   native-preflight-test:
-    needs: resolve-source-revisions
+    if: ${{ github.event_name == 'repository_dispatch' }}
+    needs: resolve-release-set
     runs-on: ubuntu-latest
-    environment: Production
+    environment: Candidate Build
     timeout-minutes: 120
     name: Native preflight test
     outputs:
@@ -84,15 +129,16 @@ jobs:
       - name: Checkout compilation source
         uses: actions/checkout@v6
         with:
+          persist-credentials: false
           repository: ${{ secrets.SOURCE_REPOSITORY }}
-          ref: ${{ needs.resolve-source-revisions.outputs.source_repository_sha }}
-          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          ref: ${{ needs.resolve-release-set.outputs.source_revision }}
+          ssh-key: ${{ secrets.SOURCE_READ_DEPLOY_KEY }}
           submodules: 'recursive'
 
       - name: Verify resolved source revisions
         env:
-          EXPECTED_SOURCE_REPOSITORY_SHA: ${{ needs.resolve-source-revisions.outputs.source_repository_sha }}
-          EXPECTED_PDFIUM_SOURCE_SHA: ${{ needs.resolve-source-revisions.outputs.pdfium_source_sha }}
+          EXPECTED_SOURCE_REPOSITORY_SHA: ${{ needs.resolve-release-set.outputs.source_revision }}
+          EXPECTED_PDFIUM_SOURCE_SHA: ${{ needs.resolve-release-set.outputs.pdfium_source_sha }}
         run: |
           SOURCE_REPOSITORY_SHA=$(git rev-parse HEAD)
           PDFIUM_SOURCE_SHA=$(git -C pdfium-src rev-parse HEAD)
@@ -122,15 +168,15 @@ jobs:
           echo "filter=$FILTER" >> "$GITHUB_OUTPUT"
 
   build:
-    needs: resolve-source-revisions
+    if: ${{ github.event_name == 'repository_dispatch' }}
+    needs: resolve-release-set
     runs-on: ubuntu-latest
-    environment: Production
+    environment: Candidate Build
     timeout-minutes: 120
     strategy:
       fail-fast: false
-      matrix:
-        build_type: [dev, prod]
-    name: Candidate build (${{ matrix.build_type }})
+      matrix: ${{ fromJSON(needs.resolve-release-set.outputs.targets) }}
+    name: Candidate build (${{ matrix.build_role }}, ${{ matrix.target_id }})
     env:
       # Build paths
       ROOT: ${{ github.workspace }}
@@ -160,16 +206,17 @@ jobs:
       - name: Checkout compilation source
         uses: actions/checkout@v6
         with:
+          persist-credentials: false
           repository: ${{ secrets.SOURCE_REPOSITORY }}
-          ref: ${{ needs.resolve-source-revisions.outputs.source_repository_sha }}
-          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          ref: ${{ needs.resolve-release-set.outputs.source_revision }}
+          ssh-key: ${{ secrets.SOURCE_READ_DEPLOY_KEY }}
           submodules: 'recursive'
 
       - name: Verify resolved source revisions
-        id: source-revisions
+        id: source-check
         env:
-          EXPECTED_SOURCE_REPOSITORY_SHA: ${{ needs.resolve-source-revisions.outputs.source_repository_sha }}
-          EXPECTED_PDFIUM_SOURCE_SHA: ${{ needs.resolve-source-revisions.outputs.pdfium_source_sha }}
+          EXPECTED_SOURCE_REPOSITORY_SHA: ${{ needs.resolve-release-set.outputs.source_revision }}
+          EXPECTED_PDFIUM_SOURCE_SHA: ${{ needs.resolve-release-set.outputs.pdfium_source_sha }}
         run: |
           SOURCE_REPOSITORY_SHA=$(git rev-parse HEAD)
           PDFIUM_SOURCE_SHA=$(git -C pdfium-src rev-parse HEAD)
@@ -184,20 +231,44 @@ jobs:
             exit 1
           fi
 
-          echo "source_repository_sha=$SOURCE_REPOSITORY_SHA" >> "$GITHUB_OUTPUT"
           echo "pdfium_source_sha=$PDFIUM_SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Checkout builder automation
         uses: actions/checkout@v6
         with:
+          persist-credentials: false
           ref: ${{ github.sha }}
           path: .builder-ci
+
+      - name: Verify release target
+        env:
+          CONTRACT_VERSION: ${{ needs.resolve-release-set.outputs.contract_version }}
+          SOURCE_REVISION: ${{ needs.resolve-release-set.outputs.source_revision }}
+          RELEASE_ID: ${{ needs.resolve-release-set.outputs.release_id }}
+          TARGET_ID: ${{ matrix.target_id }}
+          BUILD_ROLE: ${{ matrix.build_role }}
+          DISPATCH_MANIFEST: ${{ toJSON(github.event.client_payload.manifest) }}
+        run: |
+          printf '%s\n' "$DISPATCH_MANIFEST" > release-set.json
+          python3 build/release_set.py verify \
+            --source-revision "$SOURCE_REVISION" \
+            --manifest release-set.json \
+            --release-id "$RELEASE_ID" \
+            --target-id "$TARGET_ID"
+          bash .builder-ci/ci/build-info-contract.sh validate-source-manifest \
+            --manifest release-set.json \
+            --contract-version "$CONTRACT_VERSION" \
+            --source-revision "$SOURCE_REVISION" \
+            --release-id "$RELEASE_ID"
+          jq -e --arg target_id "$TARGET_ID" --arg build_role "$BUILD_ROLE" \
+            '.targets[] | select(.target_id == $target_id) | .build_role == $build_role' \
+            release-set.json >/dev/null
 
       # ============ Cache Strategy (restore-only, save separately) ============
       - name: Setup cache key
         id: cache-settings
         run: |
-          echo "key=emsdk-3.1.70-${{ runner.os }}-${{ matrix.build_type }}" >> $GITHUB_OUTPUT
+          echo "key=emsdk-3.1.70-${{ runner.os }}-${{ matrix.target_id }}" >> $GITHUB_OUTPUT
 
       - name: Restore Emscripten SDK cache
         id: cache-emsdk
@@ -241,6 +312,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 8
 
       # ============ Emscripten SDK 3.1.70 (from Dockerfile emsdk-base) ============
       - name: Install Emscripten SDK 3.1.70
@@ -313,76 +389,130 @@ jobs:
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       # ============ Run Build Script ============
-      - name: Resolve product lock
+      - name: Build release target
+        env:
+          SOURCE_REVISION: ${{ needs.resolve-release-set.outputs.source_revision }}
+          RELEASE_ID: ${{ needs.resolve-release-set.outputs.release_id }}
+          TARGET_ID: ${{ matrix.target_id }}
         run: |
-          PRODUCT_LOCK=$(bash .builder-ci/ci/build-info-contract.sh print-product-lock \
-            --build-type "${{ matrix.build_type }}")
-          echo "PRODUCT_LOCK=$PRODUCT_LOCK" >> "$GITHUB_ENV"
+          [[ -z "${BUILD_VARIANT+x}" && -z "${PRODUCT_LOCK+x}" && -z "${BUILD_TYPE+x}" ]] || {
+            echo "::error::Private build selectors are not accepted by this workflow"
+            exit 1
+          }
+          python3 build/release_set.py build \
+            --source-revision "$SOURCE_REVISION" \
+            --release-id "$RELEASE_ID" \
+            --target-id "$TARGET_ID"
 
-      - name: Build PDFium
-        run: bash scripts/build.sh
+      # ============ Assemble and Transport Candidate ============
+      - name: Prepare candidate transport tooling
+        run: bash .builder-ci/ci/install-age.sh
 
-      # ============ Collect Artifacts ============
-      - name: Collect build artifacts
+      - name: Prepare candidate transport
+        env:
+          CONTRACT_VERSION: ${{ needs.resolve-release-set.outputs.contract_version }}
+          SOURCE_REVISION: ${{ needs.resolve-release-set.outputs.source_revision }}
+          RELEASE_ID: ${{ needs.resolve-release-set.outputs.release_id }}
+          TARGET_ID: ${{ matrix.target_id }}
+          BUILD_ROLE: ${{ matrix.build_role }}
+          MATERIALIZATION_RECIPIENT: ${{ vars.CANDIDATE_MATERIALIZATION_RECIPIENT }}
+          MATERIALIZATION_KEY_ID: ${{ vars.CANDIDATE_MATERIALIZATION_KEY_ID }}
         run: |
-          mkdir -p dist
-          cp -r build/wasm/* dist/ || true
-          cp pdfium-src/out/wasm/obj/libpdfium.a dist/ || true
-          cp -r src/vendor/* dist/ || true
-          
-          # Copy source files needed for rollup bundling
-          cp -r src dist/
-          cp package.json README.md rollup.config.js tsconfig.json dist/
-          
+          cleanup_plaintext() {
+            rm -rf candidate-payload dist
+            rm -f src/vendor/pdfium.wasm src/vendor/pdfium.js src/vendor/pdfium.cjs
+            rm -f build/wasm/pdfium.wasm build/wasm/pdfium.js build/wasm/pdfium.cjs
+          }
+          trap cleanup_plaintext EXIT
+
+          mkdir -p src/vendor candidate-payload candidate-metadata
+          cp build/wasm/pdfium.wasm build/wasm/pdfium.js build/wasm/pdfium.cjs src/vendor/
+
+          # Candidate-controlled package scripts run only in this unprivileged build job.
+          pnpm install --frozen-lockfile=false --ignore-scripts
+          pnpm run build
+
+          [[ -f dist/pdfium.wasm ]] || {
+            echo "::error::Static package build did not produce dist/pdfium.wasm"
+            exit 1
+          }
+          cp -r dist candidate-payload/
+          cp package.json README.md candidate-payload/
+
           bash .builder-ci/ci/build-info-contract.sh create-candidate \
-            --output dist/build-info.json \
-            --build-type "${{ matrix.build_type }}" \
+            --output candidate-payload/build-info.json \
+            --payload-dir candidate-payload \
+            --source-build-info build/wasm/build-info.json \
+            --release-manifest release-set.json \
+            --contract-version "$CONTRACT_VERSION" \
+            --source-revision "$SOURCE_REVISION" \
+            --release-id "$RELEASE_ID" \
+            --target-id "$TARGET_ID" \
             --build-timestamp "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
             --workflow-run-id "${{ github.run_id }}" \
             --workflow-run-number "${{ github.run_number }}" \
             --workflow-run-attempt "${{ github.run_attempt }}" \
             --repository "${{ github.repository }}" \
             --builder-sha "${{ github.sha }}" \
-            --source-repository-sha "${{ steps.source-revisions.outputs.source_repository_sha }}" \
-            --pdfium-source-sha "${{ steps.source-revisions.outputs.pdfium_source_sha }}"
+            --pdfium-source-sha "${{ steps.source-check.outputs.pdfium_source_sha }}"
+          cp candidate-payload/build-info.json "candidate-metadata/$TARGET_ID.json"
 
-      - name: Upload candidate artifacts
+          bash .builder-ci/ci/candidate-transport.sh prepare \
+            --input-dir candidate-payload \
+            --output-dir candidate-transport \
+            --recipient "$MATERIALIZATION_RECIPIENT" \
+            --key-id "$MATERIALIZATION_KEY_ID" \
+            --release-id "$RELEASE_ID" \
+            --target-id "$TARGET_ID" \
+            --source-revision "$SOURCE_REVISION" \
+            --build-role "$BUILD_ROLE"
+          cleanup_plaintext
+          [[ ! -e candidate-payload && ! -e dist ]] || {
+            echo "::error::Plaintext candidate cleanup failed"
+            exit 1
+          }
+      - name: Upload candidate transport
         id: upload-candidate
         uses: actions/upload-artifact@v4
         with:
-          name: pdfium-wasm-candidate-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.build_type }}
-          path: dist/
-          retention-days: 7
-          compression-level: 9
+          name: pdfium-wasm-candidate-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target_id }}
+          path: candidate-transport/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
 
-      - name: Record candidate artifact evidence
+      - name: Record candidate evidence
+        env:
+          TARGET_ID: ${{ matrix.target_id }}
+          MATERIALIZATION_KEY_ID: ${{ vars.CANDIDATE_MATERIALIZATION_KEY_ID }}
         run: |
           bash .builder-ci/ci/build-info-contract.sh attach-candidate-artifact \
-            --candidate dist/build-info.json \
-            --output candidate-evidence/${{ matrix.build_type }}.json \
-            --artifact-name "pdfium-wasm-candidate-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.build_type }}" \
+            --candidate "candidate-metadata/$TARGET_ID.json" \
+            --transport-dir candidate-transport \
+            --output "candidate-evidence/$TARGET_ID.json" \
+            --expected-key-id "$MATERIALIZATION_KEY_ID" \
+            --artifact-name "pdfium-wasm-candidate-${{ github.run_id }}-${{ github.run_attempt }}-$TARGET_ID" \
             --artifact-id "${{ steps.upload-candidate.outputs.artifact-id }}" \
             --artifact-digest "${{ steps.upload-candidate.outputs.artifact-digest }}"
 
       - name: Upload candidate evidence
         uses: actions/upload-artifact@v4
         with:
-          name: pdfium-wasm-candidate-evidence-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.build_type }}
-          path: candidate-evidence/${{ matrix.build_type }}.json
+          name: pdfium-wasm-candidate-evidence-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target_id }}
+          path: candidate-evidence/${{ matrix.target_id }}.json
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 1
 
       - name: Upload build logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.build_type }}
+          name: build-logs-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target_id }}
           path: |
             pdfium-src/out/wasm/*.log
             build/wasm/*.log
           if-no-files-found: ignore
           retention-days: 3
-
       # ============ Save Caches (always, even on failure) ============
       - name: Save Emscripten SDK cache
         uses: actions/cache/save@v4
@@ -412,8 +542,9 @@ jobs:
           key: rust-toolchain-${{ runner.os }}-v1
 
   accept-candidates:
+    if: ${{ github.event_name == 'repository_dispatch' }}
     needs:
-      - resolve-source-revisions
+      - resolve-release-set
       - build-info-contract-test
       - native-preflight-test
       - build
@@ -421,9 +552,11 @@ jobs:
     timeout-minutes: 10
     name: Accept candidate builds
     env:
+      CONTRACT_VERSION: ${{ needs.resolve-release-set.outputs.contract_version }}
+      SOURCE_REVISION: ${{ needs.resolve-release-set.outputs.source_revision }}
+      RELEASE_ID: ${{ needs.resolve-release-set.outputs.release_id }}
       EXPECTED_BUILDER_SHA: ${{ github.sha }}
-      EXPECTED_SOURCE_REPOSITORY_SHA: ${{ needs.resolve-source-revisions.outputs.source_repository_sha }}
-      EXPECTED_PDFIUM_SOURCE_SHA: ${{ needs.resolve-source-revisions.outputs.pdfium_source_sha }}
+      EXPECTED_PDFIUM_SOURCE_SHA: ${{ needs.resolve-release-set.outputs.pdfium_source_sha }}
       EXPECTED_REPOSITORY: ${{ github.repository }}
       EXPECTED_WORKFLOW_RUN_ID: ${{ github.run_id }}
       EXPECTED_WORKFLOW_RUN_NUMBER: ${{ github.run_number }}
@@ -434,7 +567,13 @@ jobs:
       - name: Checkout builder repository
         uses: actions/checkout@v6
         with:
+          persist-credentials: false
           ref: ${{ github.sha }}
+
+      - name: Restore dispatched release manifest
+        env:
+          DISPATCH_MANIFEST: ${{ toJSON(github.event.client_payload.manifest) }}
+        run: printf '%s\n' "$DISPATCH_MANIFEST" > release-set.json
 
       - name: Download candidate evidence
         uses: actions/download-artifact@v4
@@ -446,13 +585,16 @@ jobs:
       - name: Validate and accept candidates
         run: |
           bash ci/build-info-contract.sh accept-candidate-set \
+            --release-manifest release-set.json \
             --evidence-dir candidate-evidence \
             --output-dir accepted \
             --accepted-at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
             --focused-test-filter "$FOCUSED_TEST_FILTER" \
+            --contract-version "$CONTRACT_VERSION" \
+            --source-revision "$SOURCE_REVISION" \
+            --release-id "$RELEASE_ID" \
             --repository "$EXPECTED_REPOSITORY" \
             --builder-sha "$EXPECTED_BUILDER_SHA" \
-            --source-repository-sha "$EXPECTED_SOURCE_REPOSITORY_SHA" \
             --pdfium-source-sha "$EXPECTED_PDFIUM_SOURCE_SHA" \
             --workflow-run-id "$EXPECTED_WORKFLOW_RUN_ID" \
             --workflow-run-number "$EXPECTED_WORKFLOW_RUN_NUMBER" \
@@ -464,4 +606,4 @@ jobs:
           name: pdfium-wasm-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
           path: accepted/
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 1

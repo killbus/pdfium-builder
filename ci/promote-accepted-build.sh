@@ -11,25 +11,34 @@ fail() {
 
 usage() {
   cat <<'EOF'
-Usage: ci/promote-accepted-build.sh [options]
+Usage: ci/promote-accepted-build.sh <prepare|publish> [options]
 
-Required options:
-  --artifact-dir <path>          Downloaded candidate artifact directory.
+Prepare options:
+  --artifact-dir <path>          Materialized candidate payload directory.
   --accepted-manifest <path>     Validated accepted build-info manifest.
-  --build-type <dev|prod>        Release channel to promote.
+  --output-dir <path>            Prepared release repository output directory.
+  --build-role <dev|prod>        Operational build role to promote.
+  --target-id <target-v1-...>    Opaque release target identity.
+  --repository <owner/repo>      Builder repository for production releases.
+Publish options:
+  --release-dir <path>           Prepared release repository directory.
+  --accepted-manifest <path>     Validated accepted build-info manifest.
+  --build-role <dev|prod>        Operational build role to promote.
+  --target-id <target-v1-...>    Opaque release target identity.
   --repository <owner/repo>      Builder repository for production releases.
   --source-repository <owner/repo>
-                                 Compilation repository for dev releases.
+                                 Required only for dev publication.
   --workflow-id <id>             Triggering build workflow ID.
   --workflow-run-id <id>         Triggering build run ID.
   --workflow-run-attempt <n>     Triggering build run attempt.
 
-Environment:
+Environment for publish:
   GH_TOKEN                       GitHub token used by gh and production push.
 EOF
 }
 
 parse_options() {
+  OPTIONS=()
   while (($# > 0)); do
     [[ "$1" == --* ]] || fail "expected an option, got '$1'"
     (($# >= 2)) || fail "option '$1' requires a value"
@@ -65,6 +74,10 @@ require_file() {
   [[ -f "$2" ]] || fail "$1 does not exist: $2"
 }
 
+require_directory() {
+  [[ -d "$2" ]] || fail "$1 does not exist: $2"
+}
+
 require_repository() {
   [[ "$2" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "$1 is not an owner/repository name"
 }
@@ -72,47 +85,37 @@ require_repository() {
 load_accepted_manifest() {
   BUILD_TIMESTAMP="$(jq -er '.build_timestamp' "$ACCEPTED_MANIFEST")"
   BUILDER_SHA="$(jq -er '.builder_sha' "$ACCEPTED_MANIFEST")"
-  SOURCE_REPOSITORY_SHA="$(jq -er '.source_repository_sha' "$ACCEPTED_MANIFEST")"
+  SOURCE_REVISION="$(jq -er '.source_revision' "$ACCEPTED_MANIFEST")"
+  RELEASE_ID="$(jq -er '.release_id' "$ACCEPTED_MANIFEST")"
   PDFIUM_SOURCE_SHA="$(jq -er '.pdfium_source_sha' "$ACCEPTED_MANIFEST")"
   FOCUSED_TEST_FILTER="$(jq -er '.focused_embedder_test.filter' "$ACCEPTED_MANIFEST")"
   FOCUSED_TEST_STATUS="$(jq -er '.focused_embedder_test.status' "$ACCEPTED_MANIFEST")"
 
-  local manifest_build_type
-  manifest_build_type="$(jq -er '.build_type' "$ACCEPTED_MANIFEST")"
-  [[ "$BUILD_TYPE" == "dev" || "$BUILD_TYPE" == "prod" ]] || fail "unsupported build type '$BUILD_TYPE'"
-  [[ "$manifest_build_type" == "$BUILD_TYPE" ]] || fail "accepted manifest is for a different build type"
+  local manifest_status manifest_target_id manifest_build_role
+  manifest_status="$(jq -er '.artifact_status' "$ACCEPTED_MANIFEST")"
+  manifest_target_id="$(jq -er '.target_id' "$ACCEPTED_MANIFEST")"
+  manifest_build_role="$(jq -er '.build_role' "$ACCEPTED_MANIFEST")"
+
+  [[ "$manifest_status" == "accepted" ]] || fail "manifest is not accepted"
+  [[ "$BUILD_ROLE" == "dev" || "$BUILD_ROLE" == "prod" ]] || fail "unsupported build role '$BUILD_ROLE'"
+  [[ "$TARGET_ID" =~ ^target-v1-[0-9a-f]{64}$ ]] || fail "target ID is invalid"
+  [[ "$RELEASE_ID" =~ ^release-v1-[0-9a-f]{64}$ ]] || fail "release ID is invalid"
+  [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]] || fail "source revision is invalid"
+  [[ "$manifest_target_id" == "$TARGET_ID" ]] || fail "accepted manifest is for a different target"
+  [[ "$manifest_build_role" == "$BUILD_ROLE" ]] || fail "accepted manifest is for a different build role"
 }
 
-stage_candidate_payload() {
-  BUILDER_README="$(mktemp)"
-  cp README.md "$BUILDER_README"
-  cp -r "$ARTIFACT_DIR"/. ./
+select_release_identity() {
+  local short_commit="${SOURCE_REVISION:0:7}"
+  local target_digest="${TARGET_ID#target-v1-}"
 
-  mkdir -p src/vendor
-  cp pdfium.wasm pdfium.js pdfium.cjs src/vendor/ 2>/dev/null || true
-}
-
-build_distribution() {
-  pnpm install
-  pnpm run build
-  [[ -d dist ]] || fail "package build did not create dist/"
-  cp "$ACCEPTED_MANIFEST" dist/build-info.json
-}
-
-select_release_channel() {
-  local short_commit="${SOURCE_REPOSITORY_SHA:0:7}"
-
-  if [[ "$BUILD_TYPE" == "prod" ]]; then
-    VERSION="1.0.0-${short_commit}"
-    BUILD_MODE="release (production lock)"
-    BRANCH_NAME="release"
-    TITLE="PDFium WASM $VERSION"
-    REMOTE_URL="https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+  if [[ "$BUILD_ROLE" == "prod" ]]; then
+    VERSION="1.0.0-${short_commit}.${target_digest}"
+    BRANCH_NAME="release/${TARGET_ID}"
+    TITLE="PDFium WASM ${VERSION}"
   else
     VERSION="1.0.0-${short_commit}-dev"
-    BUILD_MODE="dev (unlocked)"
     BRANCH_NAME="release-dev"
-    REMOTE_URL="git@github.com:${SOURCE_REPOSITORY}.git"
   fi
 
   TAG_NAME="v${VERSION}"
@@ -121,38 +124,40 @@ select_release_channel() {
 }
 
 assemble_release_tree() {
-  RELEASE_TEMP="$(mktemp -d)"
-  cp -r dist "$RELEASE_TEMP/"
-  cp package.json "$RELEASE_TEMP/"
+  RELEASE_TEMP="$(mktemp -d "$RELEASE_OUTPUT_PARENT/.candidate-release.XXXXXX")"
+  require_directory "candidate distribution" "$ARTIFACT_DIR/dist"
+  require_file "candidate package" "$ARTIFACT_DIR/package.json"
+  require_file "candidate README" "$ARTIFACT_DIR/README.md"
+  [[ -z "$(find "$ARTIFACT_DIR" -name .git -print -quit)" ]] || \
+    fail "candidate payload contains reserved Git metadata"
 
-  if [[ "$BUILD_TYPE" == "prod" ]]; then
-    cp "$BUILDER_README" "$RELEASE_TEMP/README.md"
-  elif [[ -f README.md ]]; then
-    cp README.md "$RELEASE_TEMP/"
+  cp -r "$ARTIFACT_DIR/dist" "$RELEASE_TEMP/"
+  cp "$ARTIFACT_DIR/package.json" "$RELEASE_TEMP/"
+  cp "$ACCEPTED_MANIFEST" "$RELEASE_TEMP/dist/build-info.json"
+
+  if [[ "$BUILD_ROLE" == "prod" ]]; then
+    cp README.md "$RELEASE_TEMP/README.md"
+  else
+    cp "$ARTIFACT_DIR/README.md" "$RELEASE_TEMP/README.md"
   fi
 }
 
 rewrite_release_package() {
-  (
-    cd "$RELEASE_TEMP"
-    npm version "$VERSION" --no-git-tag-version --allow-same-version
-
-    if [[ "$BUILD_TYPE" == "prod" ]]; then
-      jq \
-        --arg repository "$REPOSITORY" \
-        '.repository.url = ("https://github.com/" + $repository) |
-         .homepage = ("https://github.com/" + $repository + "#readme") |
-         .bugs.url = ("https://github.com/" + $repository + "/issues")' \
-        package.json >package.json.tmp
-    else
-      jq '.description += " (Development Unlocked Build)"' \
-        package.json >package.json.tmp
-    fi
-
-    mv package.json.tmp package.json
-  )
+  jq \
+    --arg version "$VERSION" \
+    --arg build_role "$BUILD_ROLE" \
+    --arg repository "$REPOSITORY" \
+    '.version = $version |
+     if $build_role == "prod" then
+       .repository.url = ("https://github.com/" + $repository) |
+       .homepage = ("https://github.com/" + $repository + "#readme") |
+       .bugs.url = ("https://github.com/" + $repository + "/issues")
+     else
+       .description += " (Development Build)"
+     end' \
+    "$RELEASE_TEMP/package.json" >"$RELEASE_TEMP/package.json.tmp"
+  mv "$RELEASE_TEMP/package.json.tmp" "$RELEASE_TEMP/package.json"
 }
-
 create_release_commit() {
   (
     cd "$RELEASE_TEMP"
@@ -164,10 +169,12 @@ create_release_commit() {
     git commit -F- <<EOF
 chore: release PDFium WASM build
 
-Build Mode: ${BUILD_MODE}
+Build Role: ${BUILD_ROLE}
 Version: ${VERSION}
+Release ID: ${RELEASE_ID}
+Target ID: ${TARGET_ID}
 Builder Commit: ${BUILDER_SHA}
-Source Commit: ${SOURCE_REPOSITORY_SHA}
+Source Commit: ${SOURCE_REVISION}
 PDFium Source Commit: ${PDFIUM_SOURCE_SHA}
 Focused Native Test: ${FOCUSED_TEST_FILTER} (${FOCUSED_TEST_STATUS})
 Timestamp: ${BUILD_TIMESTAMP}
@@ -175,20 +182,42 @@ EOF
   )
 }
 
+validate_prepared_release() {
+  require_file "prepared package" "$RELEASE_DIR/package.json"
+  require_file "prepared build-info" "$RELEASE_DIR/dist/build-info.json"
+  cmp -s "$ACCEPTED_MANIFEST" "$RELEASE_DIR/dist/build-info.json" || \
+    fail "prepared build-info differs from accepted evidence"
+  [[ "$(jq -er '.version' "$RELEASE_DIR/package.json")" == "$VERSION" ]] || \
+    fail "prepared package version does not match release identity"
+  [[ "$(cd "$RELEASE_DIR" && git branch --show-current)" == "$BRANCH_NAME" ]] || \
+    fail "prepared release branch does not match release identity"
+  [[ -z "$(cd "$RELEASE_DIR" && git status --porcelain)" ]] || \
+    fail "prepared release repository has uncommitted changes"
+}
+
 assert_latest_successful_run() {
   local latest_successful_run latest_run_id latest_run_attempt
   latest_successful_run="$(gh api \
-    "repos/${REPOSITORY}/actions/workflows/${WORKFLOW_ID}/runs?branch=main&status=success&per_page=1" \
+    "repos/${REPOSITORY}/actions/workflows/${WORKFLOW_ID}/runs?branch=main&event=repository_dispatch&status=success&per_page=1" \
     --jq '.workflow_runs[0] | "\(.id) \(.run_attempt)"')"
   read -r latest_run_id latest_run_attempt <<<"$latest_successful_run"
 
   [[ "$latest_run_id" == "$WORKFLOW_RUN_ID" && "$latest_run_attempt" == "$WORKFLOW_RUN_ATTEMPT" ]] || \
-    fail "a newer successful build supersedes this release"
+    fail "a newer successful dispatched build supersedes this release"
+}
+
+select_release_remote() {
+  if [[ "$BUILD_ROLE" == "prod" ]]; then
+    REMOTE_URL="https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+  else
+    REMOTE_URL="git@github.com:${SOURCE_REPOSITORY}.git"
+  fi
 }
 
 push_release_refs() {
   (
-    cd "$RELEASE_TEMP"
+    cd "$RELEASE_DIR"
+    git remote remove origin >/dev/null 2>&1 || true
     git remote add origin "$REMOTE_URL"
     git push --force origin "$BRANCH_NAME"
 
@@ -196,13 +225,13 @@ push_release_refs() {
       git push origin --delete "$TAG_NAME" || true
     fi
 
-    git tag "$TAG_NAME"
-    git push origin "$TAG_NAME"
+    git tag --force "$TAG_NAME"
+    git push --force origin "$TAG_NAME"
   )
 }
 
 publish_production_release() {
-  [[ "$BUILD_TYPE" == "prod" ]] || return 0
+  [[ "$BUILD_ROLE" == "prod" ]] || return 0
 
   gh release delete "$TAG_NAME" --repo "$REPOSITORY" -y || true
 
@@ -212,65 +241,119 @@ publish_production_release() {
     --notes-file - <<EOF
 # PDFium WASM Build
 
-This is an automated compilation output of PDFium WebAssembly module with production domain lock enabled.
+This is an automated PDFium WebAssembly build for an opaque production target.
 
 - **Version**: $VERSION
+- **Release ID**: $RELEASE_ID
+- **Target ID**: $TARGET_ID
+- **Build Role**: $BUILD_ROLE
 - **Builder Commit**: $BUILDER_SHA
-- **Source Commit**: $SOURCE_REPOSITORY_SHA
+- **Source Commit**: $SOURCE_REVISION
 - **PDFium Source Commit**: $PDFIUM_SOURCE_SHA
 - **Focused Native Test**: $FOCUSED_TEST_FILTER ($FOCUSED_TEST_STATUS)
-- **Build Mode**: $BUILD_MODE
 - **Timestamp**: $BUILD_TIMESTAMP
 EOF
 }
 
-cleanup() {
-  [[ -z "${BUILDER_README:-}" ]] || rm -f "$BUILDER_README"
+cleanup_prepare() {
   [[ -z "${RELEASE_TEMP:-}" ]] || rm -rf "$RELEASE_TEMP"
 }
 
-main() {
-  if (($# == 1)) && [[ "$1" == "-h" || "$1" == "--help" ]]; then
-    usage
-    return 0
-  fi
-
+prepare_release() {
   parse_options "$@"
-  assert_known_options artifact-dir accepted-manifest build-type repository \
-    source-repository workflow-id workflow-run-id workflow-run-attempt
+  assert_known_options artifact-dir accepted-manifest output-dir build-role target-id \
+    repository
 
+  local output_dir output_name
   ARTIFACT_DIR="$(required_option artifact-dir)"
   ACCEPTED_MANIFEST="$(required_option accepted-manifest)"
-  BUILD_TYPE="$(required_option build-type)"
+  output_dir="$(required_option output-dir)"
+  BUILD_ROLE="$(required_option build-role)"
+  TARGET_ID="$(required_option target-id)"
   REPOSITORY="$(required_option repository)"
-  SOURCE_REPOSITORY="$(required_option source-repository)"
+  require_directory "candidate payload directory" "$ARTIFACT_DIR"
+  require_file "accepted manifest" "$ACCEPTED_MANIFEST"
+  require_file "builder README" README.md
+  require_repository "builder repository" "$REPOSITORY"
+  [[ ! -e "$output_dir" ]] || fail "prepared release output already exists: $output_dir"
+
+  ARTIFACT_DIR="$(cd "$ARTIFACT_DIR" && pwd)"
+  ACCEPTED_MANIFEST="$(cd "$(dirname "$ACCEPTED_MANIFEST")" && pwd)/$(basename "$ACCEPTED_MANIFEST")"
+  output_name="$(basename "$output_dir")"
+  [[ "$output_name" != "." && "$output_name" != ".." ]] || fail "prepared release output name is invalid"
+  mkdir -p "$(dirname "$output_dir")"
+  RELEASE_OUTPUT_PARENT="$(cd "$(dirname "$output_dir")" && pwd)"
+  RELEASE_OUTPUT="$RELEASE_OUTPUT_PARENT/$output_name"
+
+  local command
+  for command in git jq; do
+    require_command "$command"
+  done
+
+  trap cleanup_prepare EXIT
+  load_accepted_manifest
+  select_release_identity
+  assemble_release_tree
+  rewrite_release_package
+  create_release_commit
+  mv "$RELEASE_TEMP" "$RELEASE_OUTPUT"
+  RELEASE_TEMP=""
+}
+
+publish_release() {
+  parse_options "$@"
+  assert_known_options release-dir accepted-manifest build-role target-id repository \
+    source-repository workflow-id workflow-run-id workflow-run-attempt
+
+  RELEASE_DIR="$(required_option release-dir)"
+  ACCEPTED_MANIFEST="$(required_option accepted-manifest)"
+  BUILD_ROLE="$(required_option build-role)"
+  TARGET_ID="$(required_option target-id)"
+  REPOSITORY="$(required_option repository)"
+  SOURCE_REPOSITORY="${OPTIONS[source-repository]:-}"
   WORKFLOW_ID="$(required_option workflow-id)"
   WORKFLOW_RUN_ID="$(required_option workflow-run-id)"
   WORKFLOW_RUN_ATTEMPT="$(required_option workflow-run-attempt)"
 
-  [[ -d "$ARTIFACT_DIR" ]] || fail "candidate artifact directory does not exist: $ARTIFACT_DIR"
+  require_directory "prepared release directory" "$RELEASE_DIR"
   require_file "accepted manifest" "$ACCEPTED_MANIFEST"
-  require_file "builder README" README.md
   require_repository "builder repository" "$REPOSITORY"
-  require_repository "source repository" "$SOURCE_REPOSITORY"
+  if [[ "$BUILD_ROLE" == "dev" ]]; then
+    SOURCE_REPOSITORY="$(required_option source-repository)"
+    require_repository "source repository" "$SOURCE_REPOSITORY"
+  else
+    [[ -z "$SOURCE_REPOSITORY" ]] || fail "--source-repository is valid only for dev publication"
+  fi
   [[ -n "${GH_TOKEN:-}" ]] || fail "GH_TOKEN is required"
 
+  RELEASE_DIR="$(cd "$RELEASE_DIR" && pwd)"
+  ACCEPTED_MANIFEST="$(cd "$(dirname "$ACCEPTED_MANIFEST")" && pwd)/$(basename "$ACCEPTED_MANIFEST")"
+
   local command
-  for command in gh git jq npm pnpm; do
+  for command in cmp gh git jq; do
     require_command "$command"
   done
 
-  trap cleanup EXIT
   load_accepted_manifest
-  stage_candidate_payload
-  build_distribution
-  select_release_channel
-  assemble_release_tree
-  rewrite_release_package
-  create_release_commit
+  select_release_identity
+  validate_prepared_release
+  select_release_remote
   assert_latest_successful_run
   push_release_refs
   publish_production_release
+}
+
+main() {
+  (($# >= 1)) || { usage; exit 2; }
+  local command="$1"
+  shift
+
+  case "$command" in
+    prepare) prepare_release "$@" ;;
+    publish) publish_release "$@" ;;
+    -h|--help|help) usage ;;
+    *) fail "unknown command '$command'" ;;
+  esac
 }
 
 main "$@"
