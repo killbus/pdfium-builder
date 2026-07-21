@@ -51,6 +51,14 @@
 - [x] Document rollback and retry behavior for immutable source revisions and release IDs.
 - [x] Link the source repository contract task and pin its accepted schema version.
 
+## Phase 7 — Restored Source-Identity Privacy Completion
+
+- [x] Remove `source_repository` from repository-dispatch validation and use only secret configuration for private checkouts.
+- [x] Remove `source_repository` from candidate, accepted, and release build-info schemas and comparisons.
+- [x] Keep the source repository as a runtime-only parameter for private dev publication without copying it into release content.
+- [x] Add negative tests scanning dispatch, evidence, transport, prepared release, and release notes for repository identity leakage.
+- [x] Update workflow and contract documentation to distinguish secret control-plane routing from public provenance data.
+
 ## Validation Commands
 
 Run the existing shell contract tests and focused transport tests. Before each commit:

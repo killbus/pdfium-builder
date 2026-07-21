@@ -2,7 +2,7 @@
 
 ## Goal
 
-Keep `pdfium-builder` responsible for every dispatched build role, including `dev` and `prod`, while ensuring that an unlocked development payload is never uploaded in plaintext to the public builder repository. The builder must transport, validate, and promote candidates through one versioned protected envelope without exposing private source-side variant mappings.
+Keep `pdfium-builder` responsible for every dispatched build role, including `dev` and `prod`, while ensuring that an unlocked development payload is never uploaded in plaintext to the public builder repository. The builder must transport, validate, and promote candidates through one versioned protected envelope without exposing private source-side variant mappings or the private source repository identity.
 
 ## Background and Confirmed Facts
 
@@ -23,7 +23,7 @@ The builder continues to execute all dispatched build roles, including `dev` and
 
 ### R2. Source Contract Consumption
 
-The builder consumes the pinned source revision, immutable `release_id`, opaque target identity, operational build role, expected outputs, and transport profile supplied by the source contract. It must not require or derive public `BUILD_VARIANT`, `PRODUCT_LOCK`, domain, customer, or private variant identifiers.
+The builder consumes the pinned source revision, immutable `release_id`, opaque target identity, operational build role, expected outputs, and transport profile supplied by the source contract. It obtains the allowed private source repository only from `SOURCE_REPOSITORY` secret control-plane configuration. Dispatch payloads, candidate/accepted evidence, release metadata, artifacts, and logs must not contain the repository owner/name. The builder must not require or derive public `BUILD_VARIANT`, `PRODUCT_LOCK`, domain, customer, or private variant identifiers.
 
 ### R3. Common Protected Transport
 
@@ -35,7 +35,7 @@ The public builder must never upload a plaintext unlocked `dev` payload. If cros
 
 ### R5. Candidate and Evidence Integrity
 
-The builder records both transport identity and materialized payload identity. Candidate acceptance must reject mismatched source revisions, release IDs, target IDs, roles, artifact identities, digests, workflow runs, or builder revisions.
+The builder records both transport identity and materialized payload identity. Candidate acceptance must reject mismatched source revisions, release IDs, target IDs, roles, artifact identities, digests, workflow runs, or builder revisions. Source repository identity is validated only through trusted workflow configuration and is never an evidence field.
 
 ### R6. Channel-Specific Promotion
 
@@ -70,6 +70,9 @@ Unsupported transport profiles fail closed. The builder contract and transport e
 - [x] Dev promotion reaches only the fixed source-private `release-dev` destination and never creates a builder GitHub Release.
 - [x] Each prod target reaches only its target-specific public builder branch/tag/release and cannot overwrite another prod target.
 - [x] Candidate evidence records transport digest and materialized payload digest without private source mappings.
+- [x] Repository dispatch accepts no `source_repository` field and every private source checkout uses `secrets.SOURCE_REPOSITORY`.
+- [x] Candidate, accepted, transport, and final release metadata reject and omit private source repository identity.
+- [x] Dev publication still uses the secret source repository as a runtime destination without persisting it in the package.
 - [x] Tampered, truncated, wrong-target, wrong-release, wrong-role, and wrong-key envelopes fail closed.
 - [x] Private keys and plaintext payload contents do not appear in workflow logs, artifacts, or committed files.
 - [x] Cleanup runs after successful promotion and has a short-retention fallback on failure.

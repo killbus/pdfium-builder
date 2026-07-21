@@ -6,7 +6,7 @@ This task implements the consumer side of the source-owned release-set contract 
 
 The accepted source-side functional contract is pinned to commit `a7c2528c8f8e1d2215aa4a343b0e9f30b4768055` and schema version `1`.
 
-The builder owns execution of all dispatched build roles and publication routing. It must not learn private source mappings or store plaintext unlocked candidate payloads in public workflow artifacts.
+The builder owns execution of all dispatched build roles and publication routing. It must not learn private source mappings, expose the private source repository identity through its public data plane, or store plaintext unlocked candidate payloads in public workflow artifacts. The repository address exists only as secret control-plane configuration for checkout and dev publication.
 
 ## 2. Current Flow and Risk
 
@@ -108,7 +108,7 @@ Routing must be a fail-closed allowlist. A workflow input or source manifest mus
 
 Candidate evidence must bind:
 
-- source repository and exact source revision;
+- exact source revision;
 - builder repository and exact builder revision;
 - immutable `release_id`;
 - opaque `target_id`;
@@ -118,7 +118,7 @@ Candidate evidence must bind:
 - materialized payload digest;
 - workflow run ID, number, and attempt.
 
-The accepted manifest must be sufficient for the release workflow to reject a candidate that was replaced, re-run under a different source revision, produced for another target, or produced with an unsupported transport profile.
+The accepted manifest must be sufficient for the release workflow to reject a candidate that was replaced, re-run under a different source revision, produced for another target, or produced with an unsupported transport profile. It must not contain the private source repository owner/name. Release jobs obtain that address directly from protected `SOURCE_REPOSITORY` configuration when a private checkout or dev push is required.
 
 ## 8. Failure, Retry, and Cleanup
 
@@ -148,3 +148,5 @@ The implementation must prove:
 6. Prod cannot use the source-private dev route.
 7. Logs and uploaded evidence contain no key material or plaintext payload content.
 8. Cleanup removes plaintext temporary files and attempts artifact removal without breaking retry evidence.
+9. Dispatch payloads, candidate evidence, accepted manifests, release packages, release notes, artifact names, and logs contain no private source repository identity.
+10. Removing repository identity from evidence does not weaken revision/release/target/builder provenance validation.
