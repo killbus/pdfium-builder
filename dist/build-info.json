@@ -1,0 +1,36 @@
+{
+  "accepted_at": "2026-07-22T05:39:51Z",
+  "artifact_status": "accepted",
+  "build_role": "prod",
+  "build_timestamp": "2026-07-22T05:38:43Z",
+  "builder_sha": "5d7a8551cb90844dd2dc7669e5cc18c7af68f2a8",
+  "candidate_artifact": {
+    "digest": "sha256:969e086c1669d68f948806095029cefb47613d4aa8a44094f46f7bf481cd763f",
+    "id": "8519399190",
+    "name": "pdfium-wasm-candidate-29893699738-1-target-v1-8c30c77766870b8861c950a747dc1a737916611a1fafbb47ec9c85ad1db7481c"
+  },
+  "cipher_profile": "age-x25519-v1",
+  "evidence_version": 1,
+  "expected_outputs": [
+    "pdfium.wasm",
+    "build-info.json"
+  ],
+  "focused_embedder_test": {
+    "filter": "FPDFEditPageEmbedderTest.ReusableTextStampPreflightDoesNotAddObjects:FPDFEditPageEmbedderTest.ReusableTextFormCanBeSharedAcrossPages:FPDFEditPageEmbedderTest.ReusableTextFormsRetainSharedEmbeddedFontAfterClose:FPDFEditPageEmbedderTest.ReusableTextFormRejectsFontOwnedByDifferentDocument:FPDFEditPageEmbedderTest.ReusableTextFormRejectsInvalidInputs",
+    "status": "passed"
+  },
+  "key_id": "candidate-2026-07",
+  "payload_digest": "sha256:4c7b893934a3816ce1a78639f907504bf7e9af3f1894ca6527d472c25fff79c7",
+  "pdfium_source_sha": "07a10d2c188287aa94f8d273f2eebb2edba787a5",
+  "release_id": "release-v1-33ff1c9fcff27729f26621913d0ec199be52f3f0ad6845e32e3d20a3e13b360a",
+  "repository": "killbus/pdfium-builder",
+  "source_contract_version": 1,
+  "source_repository": "killbus/pdfium-mod-wasm",
+  "source_revision": "ec9a913992caababf2e491e35027cb86b8021985",
+  "target_id": "target-v1-8c30c77766870b8861c950a747dc1a737916611a1fafbb47ec9c85ad1db7481c",
+  "transport_digest": "sha256:ae7cd3cae519e0319d0ec3cd90d26db4169d5456f6861b65a6483a65d2c046aa",
+  "transport_profile": "envelope-v1",
+  "workflow_run_attempt": "1",
+  "workflow_run_id": "29893699738",
+  "workflow_run_number": "61"
+}
