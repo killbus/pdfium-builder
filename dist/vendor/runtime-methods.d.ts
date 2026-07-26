@@ -1,0 +1,24 @@
+export interface WasmExports {
+    malloc: (size: number) => number;
+    free: (ptr: number) => void;
+}
+/**
+ * Subset of Emscripten helpers that our wrapper re-exports.
+ * Extend `customTsTypes` above if you want richer typings.
+ */
+export interface PdfiumRuntimeMethods {
+    wasmExports: WasmExports;
+    UTF16ToString: typeof UTF16ToString;
+    UTF8ToString: typeof UTF8ToString;
+    addFunction: typeof addFunction;
+    ccall: typeof ccall;
+    cwrap: typeof cwrap;
+    FS: typeof FS;
+    getValue: typeof getValue;
+    removeFunction: typeof removeFunction;
+    setValue: typeof setValue;
+    stringToUTF16: typeof stringToUTF16;
+    stringToUTF8: typeof stringToUTF8;
+    WORKERFS: typeof WORKERFS;
+}
+export declare const exportedRuntimeMethods: readonly ["wasmExports", "UTF16ToString", "UTF8ToString", "addFunction", "ccall", "cwrap", "FS", "getValue", "removeFunction", "setValue", "stringToUTF16", "stringToUTF8", "WORKERFS"];

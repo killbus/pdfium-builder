@@ -1,0 +1,35 @@
+{
+  "accepted_at": "2026-07-26T19:22:37Z",
+  "artifact_status": "accepted",
+  "build_role": "prod",
+  "build_timestamp": "2026-07-26T19:22:20Z",
+  "builder_sha": "beb88380e0c66510a93ec67fb25182ac22fb151d",
+  "candidate_artifact": {
+    "digest": "sha256:e68f0270668858402a133e625a024f8877d507a61e98dd94b6854048df97cbf3",
+    "id": "8636009145",
+    "name": "pdfium-wasm-candidate-30216293276-1-target-v1-d722741401d9fcf252108f754899d6dac972180b4dd4faa835c819e1a961e905"
+  },
+  "cipher_profile": "age-x25519-v1",
+  "evidence_version": 1,
+  "expected_outputs": [
+    "pdfium.wasm",
+    "build-info.json"
+  ],
+  "focused_embedder_test": {
+    "filter": "FPDFEditPageEmbedderTest.ReusableTextStampPreflightDoesNotAddObjects:FPDFEditPageEmbedderTest.ReusableTextFormCanBeSharedAcrossPages:FPDFEditPageEmbedderTest.ReusableTextFormsRetainSharedEmbeddedFontAfterClose:FPDFEditPageEmbedderTest.ReusableTextFormRejectsFontOwnedByDifferentDocument:FPDFEditPageEmbedderTest.ReusableTextFormRejectsInvalidInputs:FPDFEditPageEmbedderTest.DeviceToPageByIndexMatchesLoadedCroppedRotatedPage:FPDFEditPageEmbedderTest.ReusableFormByIndexAppendsWithoutPageHandlesAndPersists:FPDFEditPageEmbedderTest.ReusableFormByIndexIsolatesAppendFromOriginalClippingState:FPDFEditPageEmbedderTest.ReusableFormByIndexRejectsInvalidInputs:FPDFEditPageEmbedderTest.ReusableFormByIndexClonesInitiallySharedResources:FPDFEditPageEmbedderTest.ReusableImageByIndexAppendsWithoutPageHandleAndPersists:FPDFEditPageEmbedderTest.ReusableFormByIndexRejectsMalformedContentsWithoutResourceMutation:FPDFEditPageEmbedderTest.ReusableFormByIndexPreservesSupportedContentsShapes:FPDFEditPageEmbedderTest.ReusableFormByIndexClonesInheritedAncestorResources:FPDFEditPageEmbedderTest.ReusableFormByIndexRejectsCyclicParentDespiteDirectResources:FPDFEditPageEmbedderTest.ReusableFormByIndexRejectsParentTypeMutationDespiteDirectResources:FPDFEditPageEmbedderTest.ReusableFormByIndexClonesIndirectXObjectSubdictionaryAndAvoidsCollision:FPDFEditPageEmbedderTest.ReusableImageByIndexClonesIndirectExtGStateSubdictionaryAndAvoidsCollision:FPDFEditPageEmbedderTest.ReusableFormByIndexRejectsPageTreeMutation:FPDFEditPageEmbedderTest.ReusableFormByIndexRejectsDuplicatePageDictionaryIdentity:FPDFEditPageEmbedderTest.ReusableFormByIndexRejectsSameCountPageReplacement",
+    "status": "passed"
+  },
+  "key_id": "candidate-2026-07",
+  "payload_digest": "sha256:0e38fda8b9bf244e0e3468d6a76f9bef2d232810a0618ca8a0f15d208ea55904",
+  "pdfium_source_sha": "affd5805fbf3ff047b7e49e8288561e486910aa3",
+  "release_id": "release-v1-e9ac5cfab3a2b4fec58f6ce891ff9d6a4cfd262bbafd87a48956bcdaa6e9501b",
+  "repository": "killbus/pdfium-builder",
+  "source_contract_version": 1,
+  "source_revision": "7f4fa3123fd8ccfe2bd96b1f49f6d6571a300b39",
+  "target_id": "target-v1-d722741401d9fcf252108f754899d6dac972180b4dd4faa835c819e1a961e905",
+  "transport_digest": "sha256:e5973677c6788caec89f93d859cd2f7bd3a0ade8abb8e557525db6f44c91ff76",
+  "transport_profile": "envelope-v1",
+  "workflow_run_attempt": "1",
+  "workflow_run_id": "30216293276",
+  "workflow_run_number": "76"
+}
