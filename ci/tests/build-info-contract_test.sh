@@ -206,6 +206,8 @@ for target_id in "$DEV_TARGET" "$PROD_TARGET_A" "$PROD_TARGET_B"; do
 done
 
 FOCUSED_FILTER="$(contract print-focused-test-filter)"
+[[ ":${FOCUSED_FILTER}:" == *":FPDFPPOEmbedderTest.SequentialCompactImportsPreserveMetadataAfterFullMove:"* ]] ||
+  fail "focused native filter omits sequential compact import metadata regression"
 contract accept-candidate-set \
   --release-manifest "$WORK_DIR/release-set.json" \
   --evidence-dir "$WORK_DIR/evidence" \
