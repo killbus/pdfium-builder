@@ -1,0 +1,76 @@
+{
+  "name": "@killbus/pdfium",
+  "version": "1.0.0-4af48f2.e22ab6f477070e0c2e69b5d0a69cbb27a212e38572063a2c9a32b4e5137c0f06",
+  "private": false,
+  "description": "PDFium WebAssembly for the web platform with chunked save API support. This package provides a powerful JavaScript interface to PDFium, enabling high-quality PDF rendering and manipulation directly in web applications.",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "browser": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.browser.js"
+      },
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./pdfium.wasm": "./dist/pdfium.wasm"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/killbus/pdfium-builder"
+  },
+  "homepage": "https://github.com/killbus/pdfium-builder#readme",
+  "bugs": {
+    "url": "https://github.com/killbus/pdfium-builder/issues"
+  },
+  "keywords": [
+    "pdf",
+    "pdfium",
+    "webassembly",
+    "wasm",
+    "render",
+    "viewer",
+    "chunked-save"
+  ],
+  "scripts": {
+    "build": "rollup -c",
+    "build:watch": "rollup -c -w",
+    "wasm:dev": "docker compose up --build pdfium-dev",
+    "wasm:build": "docker compose run --rm pdfium-build",
+    "clean": "rimraf dist",
+    "lint": "eslint src --color",
+    "lint:fix": "eslint src --color --fix",
+    "build:all": "pnpm run wasm && pnpm run build"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "author": "killbus",
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^25.0.8",
+    "@rollup/plugin-node-resolve": "^15.2.1",
+    "@rollup/plugin-replace": "^5.0.2",
+    "@rollup/plugin-typescript": "^12.3.0",
+    "@types/emscripten": "^1.39.13",
+    "magic-string": "^0.30.17",
+    "rollup": "^4.53.5",
+    "rollup-plugin-copy": "^3.4.0",
+    "rollup-plugin-dts": "^6.3.0",
+    "tslib": "^2.8.1",
+    "typescript": "^5.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
