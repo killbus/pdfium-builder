@@ -1,0 +1,35 @@
+{
+  "accepted_at": "2026-08-09T19:34:55Z",
+  "artifact_status": "accepted",
+  "build_role": "prod",
+  "build_timestamp": "2026-08-09T19:30:31Z",
+  "builder_sha": "1714f70f6e6a8b2ab7d36b5a4fa83c68873573dc",
+  "candidate_artifact": {
+    "digest": "sha256:82809996a1e3474c20c7eada949cc4577c40eb84c9bfe928cb31d1fb5ca46b33",
+    "id": "9043142666",
+    "name": "pdfium-wasm-candidate-31331270064-1-target-v1-2e2cd1944687b1392ee0967d0f9088172dc0fe1d4a5425665e6e6bc9704a3c7f"
+  },
+  "cipher_profile": "age-x25519-v1",
+  "evidence_version": 1,
+  "expected_outputs": [
+    "pdfium.wasm",
+    "build-info.json"
+  ],
+  "focused_embedder_test": {
+    "filter": "FPDFEditPageEmbedderTest.ReusableTextStampPreflightDoesNotAddObjects:FPDFEditPageEmbedderTest.ReusableTextFormCanBeSharedAcrossPages:FPDFEditPageEmbedderTest.ReusableTextFormsRetainSharedEmbeddedFontAfterClose:FPDFEditPageEmbedderTest.ReusableTextFormRejectsFontOwnedByDifferentDocument:FPDFEditPageEmbedderTest.ReusableTextFormRejectsInvalidInputs:FPDFEditPageEmbedderTest.DeviceToPageByIndexMatchesLoadedCroppedRotatedPage:FPDFViewEmbedderTest.BitmapRgbaPlacementsComposeWithoutMutatingPdfState:FPDFViewEmbedderTest.BitmapRgbaPlacementsUseLoadedPageDisplayTransform:FPDFViewEmbedderTest.BitmapRgbaPlacementsRejectInvalidInputBeforeDrawing:FPDFViewEmbedderTest.BitmapPlacementsComposeCallerOwnedSourceWithoutMutatingPdfState:FPDFViewEmbedderTest.BitmapPlacementsUseLoadedPageDisplayTransformAndDestinationByteOrder:FPDFViewEmbedderTest.BitmapPlacementsRejectInvalidInputBeforeDrawing:FPDFEditPageEmbedderTest.ReusableFormByIndexAppendsWithoutPageHandlesAndPersists:FPDFEditPageEmbedderTest.ReusableFormByIndexIsolatesAppendFromOriginalClippingState:FPDFEditPageEmbedderTest.ReusableFormByIndexRejectsInvalidInputs:FPDFEditPageEmbedderTest.ReusableFormByIndexClonesInitiallySharedResources:FPDFEditPageEmbedderTest.ReusableImageByIndexAppendsWithoutPageHandleAndPersists:FPDFEditPageEmbedderTest.ReusableFormByIndexRejectsMalformedContentsWithoutResourceMutation:FPDFEditPageEmbedderTest.ReusableFormByIndexPreservesSupportedContentsShapes:FPDFEditPageEmbedderTest.ReusableFormByIndexClonesInheritedAncestorResources:FPDFEditPageEmbedderTest.ReusableFormByIndexRejectsCyclicParentDespiteDirectResources:FPDFEditPageEmbedderTest.ReusableFormByIndexRejectsParentTypeMutationDespiteDirectResources:FPDFEditPageEmbedderTest.ReusableFormByIndexClonesIndirectXObjectSubdictionaryAndAvoidsCollision:FPDFEditPageEmbedderTest.ReusableImageByIndexClonesIndirectExtGStateSubdictionaryAndAvoidsCollision:FPDFEditPageEmbedderTest.ReusableFormByIndexRejectsPageTreeMutation:FPDFEditPageEmbedderTest.ReusableFormByIndexRejectsDuplicatePageDictionaryIdentity:FPDFEditPageEmbedderTest.ReusableFormByIndexRejectsSameCountPageReplacement",
+    "status": "passed"
+  },
+  "key_id": "candidate-2026-07",
+  "payload_digest": "sha256:638d739402dd327f11a5291a967628c650acdee1a182500e2290ee8cd39c6150",
+  "pdfium_source_sha": "603e8664864e8cf86257f2bd4fb7028e3a8e6e79",
+  "release_id": "release-v1-3170b8969f0bd2667c971139b7796082b5b2362ca1f50601817765a6ddd7a489",
+  "repository": "killbus/pdfium-builder",
+  "source_contract_version": 1,
+  "source_revision": "0da4b2844e1b9cd4ad903e780d4bfe064978214e",
+  "target_id": "target-v1-2e2cd1944687b1392ee0967d0f9088172dc0fe1d4a5425665e6e6bc9704a3c7f",
+  "transport_digest": "sha256:8b2cf0d1e45a1550b381e267d7218fa8fb9a6dc0ea1f0538e44976340ed43ead",
+  "transport_profile": "envelope-v1",
+  "workflow_run_attempt": "1",
+  "workflow_run_id": "31331270064",
+  "workflow_run_number": "84"
+}
