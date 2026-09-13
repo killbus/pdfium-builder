@@ -16,7 +16,18 @@ The accepted source contract is schema version `1`, implemented by source commit
 
 The public builder owns all `dev` and `prod` builds, but it must not receive or derive private variant mappings. Public workflow and UI labels use neutral verbs: **prepare**, **materialize**, **promote**, and **finalize**. Technical documentation must still state that `envelope-v1` provides authenticated confidentiality and integrity during cross-job transport.
 
+Source repositories own feature behavior, native regression definitions, and private target mappings; consumers own application/browser acceptance. The builder executes source-owned tests and builds, validates their public contract and evidence, and enforces transport and publication boundaries. A validation entry point must not add feature-specific selectors, test filters, or private configuration inputs.
+
+Source-side tooling derives the canonical public input bundle. Builder task
+metadata, commit messages and PR descriptions use builder-local terms;
+business-task identity and cross-repository feature links stay with their owner.
+Apply the boundary and commit review checkpoints in `AGENTS.md` before submission.
+
 ### 2. Signatures
+
+#### Non-publishing workflow input
+
+`.github/workflows/build.yml` accepts three required `workflow_dispatch` strings: `source_revision` (40 lowercase hex), `release_id` (`release-v1-64-lowercase-hex`), and `manifest` (the complete public source release-set JSON below). Only this manual route fixes `contract_version=1`; repository dispatch must still supply a valid contract version. No private selectors or source-repository input are accepted.
 
 #### Source build-info adaptation
 
@@ -164,6 +175,8 @@ The hosting artifact digest is distinct from `transport_digest` and `payload_dig
 
 #### Publication routing and retries
 
+- Manual `workflow_dispatch` runs accept only an exact source revision, release ID, and complete source-generated public manifest. They reuse pinned-source verification, the native gate, all canonical targets, and protected candidate acceptance, but cannot enter promotion. No validation-only materialization or plaintext dev download is allowed.
+- Promotion remains restricted to successful `repository_dispatch` builds on `main`. Manual validation uses an event-isolated concurrency group so it cannot cancel a release-dispatch run.
 - `dev` publishes only to the private source repository's fixed `release-dev` branch/tag and never creates a public builder GitHub Release.
 - `prod` publishes only to `release/<target_id>` and a target-derived tag/GitHub Release in the public builder repository.
 - Production version and tag identities include the complete opaque target digest so concurrent prod targets cannot collide.
@@ -178,6 +191,7 @@ The hosting artifact digest is distinct from `transport_digest` and `payload_dig
 | Missing, extra, or malformed manifest fields | Fail closed; do not infer defaults. |
 | Release/target ID or source SHA has the wrong shape | Fail before checkout or transport preparation. |
 | Release set does not contain exactly one dev and at least one prod target | Reject the complete set. |
+| Manual validation succeeds | Retain protected candidates and public acceptance evidence only; skip the release resolver and dependent promotion job. |
 | Legacy/private selector reaches the build environment | Fail explicitly before package installation/build. |
 | Private source repository identity reaches dispatch, evidence, transport, prepared output, release metadata, artifact names, or logs | Reject the field or fail the public-output privacy assertion. |
 | Source checkout differs from the declared revision | Fail before build. |
@@ -205,6 +219,8 @@ The hosting artifact digest is distinct from `transport_digest` and `payload_dig
 
 ### 6. Tests Required
 
+Pull requests to `main` run the existing contract suite in GitHub CI using repository-owned fixtures and `contents: read` permissions. Dispatched builds validate source regressions and native/WASM compilation.
+
 Run:
 
 ```bash
@@ -219,7 +235,7 @@ Required assertion points:
 
 - `ci/tests/build-info-contract_test.sh` validates strict source schema, one-dev/one-or-more-prod cardinality, output placement, artifact identity, canonical digests, target binding, rejected private fields, and absence of private source identity from candidate/evidence/accepted metadata.
 - `ci/tests/candidate-transport_test.sh` covers malformed, tampered, truncated, metadata-substituted, wrong-key, wrong-release, wrong-target, and wrong-role transports; failed materialization leaves no partial output and a same-path retry succeeds; use a real age round trip when age is installed.
-- `ci/tests/promote-accepted-build_test.sh` proves dev/prod routing isolation, source-repository use only for dev publish, multiple-prod non-collision, static package preparation, public-output/commit metadata privacy, `.git` rejection, lack of package commands and credentials during prepare, failed source-push retry, failed public-release retry, and observable cleanup fallback.
+- `ci/tests/promote-accepted-build_test.sh` proves manual-run publication exclusion, dev/prod routing isolation, source-repository use only for dev publish, multiple-prod non-collision, static package preparation, public-output/commit metadata privacy, `.git` rejection, lack of package commands and credentials during prepare, failed source-push retry, failed public-release retry, and observable cleanup fallback.
 - Workflow syntax/static assertions prove read-only build permissions, write permission only on `promote`, `persist-credentials: false` on all checkouts, no dispatch/evidence source-repository field, source-repository injection only at dev publish, no package command in the promotion boundary, and one-day candidate/evidence/acceptance retention.
 
 ### 7. Wrong vs Correct

@@ -4,12 +4,29 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
   repository_dispatch:
     types:
       - source-release-set-v1
+  workflow_dispatch:
+    inputs:
+      source_revision:
+        description: Exact 40-character source commit (validation only)
+        required: true
+        type: string
+      release_id:
+        description: Canonical release-v1 ID
+        required: true
+        type: string
+      manifest:
+        description: Source-generated public release-set JSON (complete dev and prod set)
+        required: true
+        type: string
 
 concurrency:
-  group: pdfium-build-${{ github.event.client_payload.release_id || github.ref }}
+  group: pdfium-build-${{ github.event_name }}-${{ inputs.release_id || github.event.client_payload.release_id || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -17,7 +34,7 @@ permissions:
 
 jobs:
   resolve-release-set:
-    if: ${{ github.event_name == 'repository_dispatch' }}
+    if: ${{ github.event_name == 'repository_dispatch' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     environment: Candidate Build
     timeout-minutes: 10
@@ -26,6 +43,7 @@ jobs:
       contract_version: ${{ steps.contract.outputs.contract_version }}
       source_revision: ${{ steps.contract.outputs.source_revision }}
       release_id: ${{ steps.contract.outputs.release_id }}
+      manifest: ${{ steps.contract.outputs.manifest }}
       targets: ${{ steps.contract.outputs.targets }}
       pdfium_source_sha: ${{ steps.source.outputs.pdfium_source_sha }}
 
@@ -35,14 +53,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Validate dispatched contract
+      - name: Validate source contract
         id: contract
         env:
           CONFIGURED_SOURCE_REPOSITORY: ${{ secrets.SOURCE_REPOSITORY }}
-          CONTRACT_VERSION: ${{ github.event.client_payload.contract_version }}
-          SOURCE_REVISION: ${{ github.event.client_payload.source_revision }}
-          RELEASE_ID: ${{ github.event.client_payload.release_id }}
-          DISPATCH_MANIFEST: ${{ toJSON(github.event.client_payload.manifest) }}
+          CONTRACT_VERSION: ${{ github.event_name == 'workflow_dispatch' && '1' || github.event.client_payload.contract_version }}
+          SOURCE_REVISION: ${{ inputs.source_revision || github.event.client_payload.source_revision }}
+          RELEASE_ID: ${{ inputs.release_id || github.event.client_payload.release_id }}
+          DISPATCH_MANIFEST: ${{ inputs.manifest || toJSON(github.event.client_payload.manifest) }}
         run: |
           [[ "$CONFIGURED_SOURCE_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
             echo "::error::Candidate Build secret SOURCE_REPOSITORY is missing or invalid"
@@ -58,6 +76,7 @@ jobs:
             echo "contract_version=$CONTRACT_VERSION"
             echo "source_revision=$SOURCE_REVISION"
             echo "release_id=$RELEASE_ID"
+            echo "manifest=$(jq -c . release-set.json)"
             echo "targets=$(bash ci/build-info-contract.sh print-release-matrix \
               --manifest release-set.json \
               --contract-version "$CONTRACT_VERSION" \
@@ -112,7 +131,7 @@ jobs:
         run: bash ci/run-tests.sh
 
   native-preflight-test:
-    if: ${{ github.event_name == 'repository_dispatch' }}
+    if: ${{ github.event_name == 'repository_dispatch' || github.event_name == 'workflow_dispatch' }}
     needs: resolve-release-set
     runs-on: ubuntu-latest
     environment: Candidate Build
@@ -168,7 +187,7 @@ jobs:
           echo "filter=$FILTER" >> "$GITHUB_OUTPUT"
 
   build:
-    if: ${{ github.event_name == 'repository_dispatch' }}
+    if: ${{ github.event_name == 'repository_dispatch' || github.event_name == 'workflow_dispatch' }}
     needs: resolve-release-set
     runs-on: ubuntu-latest
     environment: Candidate Build
@@ -247,7 +266,7 @@ jobs:
           RELEASE_ID: ${{ needs.resolve-release-set.outputs.release_id }}
           TARGET_ID: ${{ matrix.target_id }}
           BUILD_ROLE: ${{ matrix.build_role }}
-          DISPATCH_MANIFEST: ${{ toJSON(github.event.client_payload.manifest) }}
+          DISPATCH_MANIFEST: ${{ needs.resolve-release-set.outputs.manifest }}
         run: |
           printf '%s\n' "$DISPATCH_MANIFEST" > release-set.json
           python3 build/release_set.py verify \
@@ -542,7 +561,7 @@ jobs:
           key: rust-toolchain-${{ runner.os }}-v1
 
   accept-candidates:
-    if: ${{ github.event_name == 'repository_dispatch' }}
+    if: ${{ github.event_name == 'repository_dispatch' || github.event_name == 'workflow_dispatch' }}
     needs:
       - resolve-release-set
       - build-info-contract-test
@@ -570,9 +589,9 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
 
-      - name: Restore dispatched release manifest
+      - name: Restore validated release manifest
         env:
-          DISPATCH_MANIFEST: ${{ toJSON(github.event.client_payload.manifest) }}
+          DISPATCH_MANIFEST: ${{ needs.resolve-release-set.outputs.manifest }}
         run: printf '%s\n' "$DISPATCH_MANIFEST" > release-set.json
 
       - name: Download candidate evidence

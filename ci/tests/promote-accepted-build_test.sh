@@ -378,6 +378,15 @@ assert_role_mismatch_fails() {
   fi
 }
 
+release_guard=$(sed -n '/^    if: >-$/,/^    runs-on:/p' "$RELEASE_WORKFLOW" | sed '1d;$d' | tr -d '[:space:]')
+[[ "$release_guard" == "\${{github.event.workflow_run.event=='repository_dispatch'&&github.event.workflow_run.conclusion=='success'}}" ]] || \
+  fail "release guard must exclude manual validation and failed builds"
+promote_block=$(sed -n '/^  promote:$/,$p' "$RELEASE_WORKFLOW")
+grep -Fxq '    needs: resolve-accepted-release' <<<"$promote_block" || \
+  fail "promotion must depend on the release resolver"
+grep -q '^    if:' <<<"$promote_block" && \
+  fail "promotion must not bypass a skipped release resolver"
+
 grep -n '^[[:space:]]\+actions: write$' "$BUILD_WORKFLOW" >/dev/null && \
   fail "build workflow grants a write-capable actions token"
 grep -En '(^|[[:space:]])(pnpm|npm)([[:space:]]|$)' "$RELEASE_WORKFLOW" "$PROMOTION" >/dev/null && \
