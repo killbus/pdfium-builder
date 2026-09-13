@@ -1,0 +1,37 @@
+{
+  "id": "nonpublishing-qualification",
+  "name": "nonpublishing-qualification",
+  "title": "Add a non-publishing manual qualification entry point",
+  "description": "Reuse the builder for manual non-publishing qualification and run deterministic regression checks on PRs.",
+  "status": "in_progress",
+  "dev_type": "feature",
+  "scope": "ci",
+  "package": null,
+  "priority": "P1",
+  "creator": "codex",
+  "assignee": "codex",
+  "createdAt": "2026-09-13",
+  "completedAt": null,
+  "branch": "feat/nonpublishing-qualification",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "AGENTS.md",
+    ".github/workflows/build.yml",
+    "ci/tests/promote-accepted-build_test.sh",
+    "README.md",
+    ".trellis/spec/backend/candidate-promotion.md"
+  ],
+  "notes": "Reuse the existing suite and add only release-exclusion assertions to its promotion test. A lightweight independent boundary audit found no new blocking issue; public task metadata is builder-local and canonical input preparation remains source-owned. Ownership and task-scoped commit discipline are recorded in AGENTS.md. Full regression belongs to GitHub CI; local checks cover shell syntax and patch hygiene. Submission and CI results are tracked in the session journal.",
+  "meta": {
+    "planningApproved": true,
+    "implementationApproved": true,
+    "localHeavyBuildAllowed": false,
+    "validationRoute": "GitHub CI; local shell syntax and patch hygiene only"
+  }
+}
